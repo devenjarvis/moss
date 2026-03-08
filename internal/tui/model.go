@@ -1097,8 +1097,10 @@ func (m Model) renderListPane(width, height int) string {
 		}
 
 		maxTitleLen := width - 6 - len(datePrefix) - len(indicators)
-		if maxTitleLen > 0 && len(titleText) > maxTitleLen {
+		if maxTitleLen > 3 && len(titleText) > maxTitleLen {
 			titleText = titleText[:maxTitleLen-3] + "..."
+		} else if maxTitleLen > 0 && maxTitleLen <= 3 && len(titleText) > maxTitleLen {
+			titleText = titleText[:maxTitleLen]
 		}
 
 		display = datePrefix + titleText + indicators

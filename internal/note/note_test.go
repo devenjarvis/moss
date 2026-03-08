@@ -351,6 +351,142 @@ func TestWriteFrontmatter(t *testing.T) {
 	}
 }
 
+func TestRenameToTitle(t *testing.T) {
+	dir := t.TempDir()
+
+	t.Run("renames file to match title", func(t *testing.T) {
+		// Create a note with "untitled" filename
+		path := filepath.Join(dir, "2024-01-15-untitled.md")
+		if err := os.WriteFile(path, []byte("content"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		n := &Note{
+			FilePath: path,
+			Title:    "My Great Note",
+			Date:     "2024-01-15",
+		}
+
+		newPath, err := n.RenameToTitle()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		expectedPath := filepath.Join(dir, "2024-01-15-my-great-note.md")
+		if newPath != expectedPath {
+			t.Errorf("newPath = %q, want %q", newPath, expectedPath)
+		}
+		if n.FilePath != expectedPath {
+			t.Errorf("n.FilePath = %q, want %q", n.FilePath, expectedPath)
+		}
+		// Old file should not exist
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Error("old file should not exist after rename")
+		}
+		// New file should exist
+		if _, err := os.Stat(newPath); os.IsNotExist(err) {
+			t.Error("new file should exist after rename")
+		}
+	})
+
+	t.Run("no-op when path already matches", func(t *testing.T) {
+		path := filepath.Join(dir, "2024-01-15-correct-title.md")
+		if err := os.WriteFile(path, []byte("content"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		n := &Note{
+			FilePath: path,
+			Title:    "Correct Title",
+			Date:     "2024-01-15",
+		}
+
+		newPath, err := n.RenameToTitle()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if newPath != path {
+			t.Errorf("should not rename when path matches, got %q", newPath)
+		}
+	})
+
+	t.Run("no-op when title is empty", func(t *testing.T) {
+		path := filepath.Join(dir, "2024-01-15-empty.md")
+		if err := os.WriteFile(path, []byte("content"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		n := &Note{
+			FilePath: path,
+			Title:    "",
+			Date:     "2024-01-15",
+		}
+
+		newPath, err := n.RenameToTitle()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if newPath != path {
+			t.Errorf("should not rename when title is empty, got %q", newPath)
+		}
+	})
+
+	t.Run("no-op when target exists", func(t *testing.T) {
+		// Create both the source and target files
+		sourcePath := filepath.Join(dir, "2024-02-01-old-name.md")
+		targetPath := filepath.Join(dir, "2024-02-01-existing-note.md")
+		if err := os.WriteFile(sourcePath, []byte("source"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(targetPath, []byte("existing"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		n := &Note{
+			FilePath: sourcePath,
+			Title:    "Existing Note",
+			Date:     "2024-02-01",
+		}
+
+		newPath, err := n.RenameToTitle()
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Should return original path since target exists
+		if newPath != sourcePath {
+			t.Errorf("should not rename when target exists, got %q", newPath)
+		}
+	})
+
+	t.Run("uses current date when Date is empty", func(t *testing.T) {
+		path := filepath.Join(dir, "some-old-path.md")
+		if err := os.WriteFile(path, []byte("content"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		n := &Note{
+			FilePath: path,
+			Title:    "No Date Note",
+			Date:     "",
+		}
+
+		newPath, err := n.RenameToTitle()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Should contain today's date
+		today := strings.Split(newPath, string(filepath.Separator))
+		base := today[len(today)-1]
+		if !strings.Contains(base, "no-date-note") {
+			t.Errorf("renamed file %q should contain slug 'no-date-note'", base)
+		}
+		if !strings.HasSuffix(base, ".md") {
+			t.Errorf("renamed file %q should end with .md", base)
+		}
+	})
+}
+
 func TestListNotes(t *testing.T) {
 	dir := t.TempDir()
 
