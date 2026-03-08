@@ -461,6 +461,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case notesLoadedMsg:
 		m.notes = msg.notes
 		m.filteredNotes = msg.notes
+		// Re-apply tag filter if active
+		if m.activeTag != "" {
+			return m, m.filterByTag(m.activeTag)
+		}
 		if len(m.notes) > 0 {
 			return m, renderPreview(m.notes[0])
 		}
@@ -652,6 +656,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.mode == modeSearch {
 			m.mode = modeNormal
 			m.searchInput.Blur()
+			m.activeTag = ""
 			m.filteredNotes = m.notes
 			if m.listCursor >= len(m.filteredNotes) {
 				m.listCursor = max(0, len(m.filteredNotes)-1)
@@ -1268,8 +1273,13 @@ func (m Model) renderListPane(width, height int) string {
 				maxTextLen = width - 10
 				source = ""
 			}
+			if maxTextLen < 0 {
+				maxTextLen = 0
+			}
 			if maxTextLen > 3 && len(todoText) > maxTextLen {
 				todoText = todoText[:maxTextLen-3] + "..."
+			} else if maxTextLen == 0 {
+				todoText = ""
 			}
 
 			var display string
@@ -1358,10 +1368,15 @@ func (m Model) renderListPane(width, height int) string {
 		}
 
 		maxTitleLen := width - 6 - len(datePrefix) - len(indicators)
+		if maxTitleLen < 0 {
+			maxTitleLen = 0
+		}
 		if maxTitleLen > 3 && len(titleText) > maxTitleLen {
 			titleText = titleText[:maxTitleLen-3] + "..."
 		} else if maxTitleLen > 0 && maxTitleLen <= 3 && len(titleText) > maxTitleLen {
 			titleText = titleText[:maxTitleLen]
+		} else if maxTitleLen == 0 {
+			titleText = ""
 		}
 
 		display = datePrefix + titleText + indicators
