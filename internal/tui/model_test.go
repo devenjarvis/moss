@@ -27,7 +27,6 @@ func newTestModel(t *testing.T) Model {
 	cfg := config.Config{
 		NotesDir: t.TempDir(),
 		DBPath:   dbPath,
-		Editor:   "vi",
 	}
 	worker := ai.NewWorker(10)
 

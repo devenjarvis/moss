@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -54,7 +53,7 @@ func printUsage() {
 	fmt.Println(`
 Usage:
   moss                    Launch the TUI
-  moss new [title]        Create a new note and open in $EDITOR
+  moss new [title]        Create a new note
   moss ask "question"     Query across your notes
   moss sync               Scan for new/changed files and rebuild index
   moss generate "prompt"  Generate a new note from a prompt
@@ -229,16 +228,6 @@ func cmdNew(args []string) {
 
 	fmt.Printf("Created: %s\n", path)
 
-	// Open in editor
-	editor := cfg.Editor
-	cmd := exec.Command(editor, path)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "Editor error: %v\n", err)
-	}
-
 	// Index the new note
 	database := mustOpenDB(cfg)
 	defer database.Close() //nolint:errcheck
@@ -247,6 +236,8 @@ func cmdNew(args []string) {
 	if err == nil {
 		_ = database.UpsertNote(n)
 	}
+
+	fmt.Println("Run 'moss' to edit in the TUI")
 }
 
 func cmdAsk(args []string) {

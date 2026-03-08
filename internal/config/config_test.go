@@ -19,31 +19,6 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.DBPath != expectedDBPath {
 		t.Errorf("DBPath = %q, want %q", cfg.DBPath, expectedDBPath)
 	}
-	if cfg.Editor == "" {
-		t.Error("Editor should not be empty")
-	}
-}
-
-func TestGetEditor(t *testing.T) {
-	t.Run("EDITOR env set", func(t *testing.T) {
-		original := os.Getenv("EDITOR")
-		t.Cleanup(func() { _ = os.Setenv("EDITOR", original) })
-
-		t.Setenv("EDITOR", "nvim")
-		if got := getEditor(); got != "nvim" {
-			t.Errorf("getEditor() = %q, want %q", got, "nvim")
-		}
-	})
-
-	t.Run("EDITOR env not set", func(t *testing.T) {
-		original := os.Getenv("EDITOR")
-		t.Cleanup(func() { _ = os.Setenv("EDITOR", original) })
-
-		t.Setenv("EDITOR", "")
-		if got := getEditor(); got != "vi" {
-			t.Errorf("getEditor() = %q, want %q", got, "vi")
-		}
-	})
 }
 
 func TestLoad_NoConfigFile(t *testing.T) {
@@ -57,9 +32,6 @@ func TestLoad_NoConfigFile(t *testing.T) {
 	}
 	if cfg.DBPath == "" {
 		t.Error("DBPath should have a default value")
-	}
-	if cfg.Editor == "" {
-		t.Error("Editor should have a default value")
 	}
 }
 
@@ -79,7 +51,6 @@ func TestLoad_WithConfigFile(t *testing.T) {
 
 	configContent := `notes_dir: /custom/notes
 db_path: /custom/db.sqlite
-editor: emacs
 `
 	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configContent), 0644); err != nil {
 		t.Fatal(err)
@@ -94,9 +65,6 @@ editor: emacs
 	}
 	if cfg.DBPath != "/custom/db.sqlite" {
 		t.Errorf("DBPath = %q, want %q", cfg.DBPath, "/custom/db.sqlite")
-	}
-	if cfg.Editor != "emacs" {
-		t.Errorf("Editor = %q, want %q", cfg.Editor, "emacs")
 	}
 }
 
@@ -126,11 +94,8 @@ func TestLoad_PartialConfig(t *testing.T) {
 	if cfg.NotesDir != "/custom/notes" {
 		t.Errorf("NotesDir = %q, want %q", cfg.NotesDir, "/custom/notes")
 	}
-	// DBPath and Editor should have defaults
+	// DBPath should have default
 	if cfg.DBPath == "" {
 		t.Error("DBPath should have a default value")
-	}
-	if cfg.Editor == "" {
-		t.Error("Editor should have a default value")
 	}
 }
