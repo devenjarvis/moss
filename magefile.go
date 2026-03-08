@@ -6,12 +6,25 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
+	"time"
 )
 
-// Build compiles the moss binary.
+// Build compiles the moss binary with version info.
 func Build() error {
 	fmt.Println("Building moss...")
-	return run("go", "build", "-o", "moss", "./cmd/moss/")
+	commit := gitCommit()
+	date := time.Now().UTC().Format(time.RFC3339)
+	ldflags := fmt.Sprintf("-X github.com/devenjarvis/moss/internal/version.Version=dev -X github.com/devenjarvis/moss/internal/version.Commit=%s -X github.com/devenjarvis/moss/internal/version.Date=%s", commit, date)
+	return run("go", "build", "-ldflags", ldflags, "-o", "moss", "./cmd/moss/")
+}
+
+func gitCommit() string {
+	out, err := exec.Command("git", "rev-parse", "--short", "HEAD").Output()
+	if err != nil {
+		return "unknown"
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // Test runs all tests.

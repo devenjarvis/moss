@@ -1,0 +1,68 @@
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+    - go test ./...
+
+builds:
+  - id: moss
+    main: ./cmd/moss/
+    binary: moss
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w
+      - -X github.com/devenjarvis/moss/internal/version.Version={{.Version}}
+      - -X github.com/devenjarvis/moss/internal/version.Commit={{.Commit}}
+      - -X github.com/devenjarvis/moss/internal/version.Date={{.Date}}
+
+archives:
+  - id: default
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    name_template: "moss_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "^ci:"
+
+brews:
+  - repository:
+      owner: devenjarvis
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
+    homepage: "https://github.com/devenjarvis/moss"
+    description: "AI-powered note-taking TUI"
+    license: "MIT"
+    install: |
+      bin.install "moss"
+    test: |
+      system "#{bin}/moss", "version"

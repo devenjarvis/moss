@@ -20,6 +20,7 @@ import (
 	"github.com/devenjarvis/moss/internal/db"
 	"github.com/devenjarvis/moss/internal/note"
 	msync "github.com/devenjarvis/moss/internal/sync"
+	"github.com/devenjarvis/moss/internal/version"
 )
 
 // Pane focus constants
@@ -110,6 +111,10 @@ type todoToggledMsg struct {
 	err error
 }
 
+type updateAvailableMsg struct {
+	version string
+}
+
 func clearStatusAfter(d time.Duration) tea.Cmd {
 	return tea.Tick(d, func(_ time.Time) tea.Msg {
 		return clearStatusMsg{}
@@ -184,6 +189,9 @@ type Model struct {
 
 	// Responsive: track which panes are visible
 	chatVisible bool
+
+	// Update notification
+	updateVersion string
 }
 
 type chatMessage struct {
@@ -237,7 +245,17 @@ func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		loadNotes(m.database),
 		textinput.Blink,
+		checkForUpdate(),
 	)
+}
+
+func checkForUpdate() tea.Cmd {
+	return func() tea.Msg {
+		if latest := version.CheckLatest(); latest != "" {
+			return updateAvailableMsg{version: latest}
+		}
+		return nil
+	}
 }
 
 func loadNotes(database *db.DB) tea.Cmd {
@@ -610,6 +628,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Re-sync after editing
 		return m, syncNotes(m.cfg.NotesDir, m.database)
+
+	case updateAvailableMsg:
+		m.updateVersion = msg.version
+		return m, nil
 
 	case clearStatusMsg:
 		m.statusMsg = ""
@@ -1552,6 +1574,11 @@ func (m Model) renderStatusBar() string {
 	// Status message
 	if m.statusMsg != "" {
 		parts = append(parts, m.statusMsg)
+	}
+
+	// Update notification
+	if m.updateVersion != "" {
+		parts = append(parts, lipgloss.NewStyle().Foreground(colorSecondary).Render("v"+m.updateVersion+" available"))
 	}
 
 	left := strings.Join(parts, " │ ")
