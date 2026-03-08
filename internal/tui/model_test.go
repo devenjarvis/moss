@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/devenjarvis/moss/internal/ai"
 	"github.com/devenjarvis/moss/internal/config"
@@ -52,12 +52,12 @@ func newTestModelWithNotes(t *testing.T) Model {
 	return m
 }
 
-func keyMsg(key string) tea.KeyMsg {
-	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)}
+func keyMsg(key string) tea.KeyPressMsg {
+	return tea.KeyPressMsg{Code: rune(key[0]), Text: key}
 }
 
-func specialKeyMsg(keyType tea.KeyType) tea.KeyMsg {
-	return tea.KeyMsg{Type: keyType}
+func specialKeyMsg(code rune) tea.KeyPressMsg {
+	return tea.KeyPressMsg{Code: code}
 }
 
 // --- Pane Navigation Tests ---
@@ -475,7 +475,7 @@ func TestView_Loading(t *testing.T) {
 	m := newTestModel(t)
 	m.width = 0 // zero width triggers "Loading..."
 
-	view := m.View()
+	view := m.View().Content
 	if view != "Loading..." {
 		t.Errorf("View() = %q, want 'Loading...'", view)
 	}
@@ -485,7 +485,7 @@ func TestView_NoPanic(t *testing.T) {
 	m := newTestModelWithNotes(t)
 
 	// Should not panic
-	view := m.View()
+	view := m.View().Content
 	if view == "" {
 		t.Error("View() should not return empty string")
 	}
@@ -495,7 +495,7 @@ func TestView_HelpOverlay(t *testing.T) {
 	m := newTestModelWithNotes(t)
 	m.showHelp = true
 
-	view := m.View()
+	view := m.View().Content
 	if view == "" {
 		t.Error("help view should not be empty")
 	}
@@ -508,7 +508,7 @@ func TestView_EmptyNotes(t *testing.T) {
 	m.updateLayout()
 
 	// Should not panic with empty notes
-	view := m.View()
+	view := m.View().Content
 	if view == "" {
 		t.Error("View() should not return empty string")
 	}
@@ -1328,7 +1328,7 @@ func TestView_ConfirmDialog(t *testing.T) {
 	model, _ := m.Update(keyMsg("d"))
 	m = model.(Model)
 
-	view := m.View()
+	view := m.View().Content
 	if view == "" {
 		t.Error("View() should not be empty in confirm mode")
 	}
@@ -1341,7 +1341,7 @@ func TestView_NoPanicNarrowTerminal(t *testing.T) {
 	m = model.(Model)
 
 	// Should not panic on narrow terminal
-	view := m.View()
+	view := m.View().Content
 	if view == "" {
 		t.Error("View() should not be empty on narrow terminal")
 	}
@@ -1351,7 +1351,7 @@ func TestView_HelpOverlayShowsNewKeys(t *testing.T) {
 	m := newTestModelWithNotes(t)
 	m.showHelp = true
 
-	view := m.View()
+	view := m.View().Content
 	// Verify new keybindings are in help
 	for _, expected := range []string{"Delete note", "Generate AI note", "Filter by tag", "Cycle sort"} {
 		if !strings.Contains(view, expected) {
@@ -1364,7 +1364,7 @@ func TestStatusBar_ShowsActiveTag(t *testing.T) {
 	m := newTestModelWithNotes(t)
 	m.activeTag = "go"
 
-	view := m.View()
+	view := m.View().Content
 	if !strings.Contains(view, "tag:go") {
 		t.Error("status bar should show active tag filter")
 	}
@@ -1374,7 +1374,7 @@ func TestStatusBar_ShowsSortMode(t *testing.T) {
 	m := newTestModelWithNotes(t)
 	m.sortMode = sortTitle
 
-	view := m.View()
+	view := m.View().Content
 	if !strings.Contains(view, "sort:title") {
 		t.Error("status bar should show non-default sort mode")
 	}
@@ -1384,7 +1384,7 @@ func TestStatusBar_HidesDefaultSort(t *testing.T) {
 	m := newTestModelWithNotes(t)
 	m.sortMode = sortDate
 
-	view := m.View()
+	view := m.View().Content
 	if strings.Contains(view, "sort:date") {
 		t.Error("status bar should not show default sort mode")
 	}
@@ -1915,7 +1915,7 @@ func TestEditMode_PreviewPaneShowsEditor(t *testing.T) {
 	model, _ := m.Update(specialKeyMsg(tea.KeyEnter))
 	m = model.(Model)
 
-	view := m.View()
+	view := m.View().Content
 	if !strings.Contains(view, "Editor") {
 		t.Error("view should show 'Editor' pane title in edit mode")
 	}
@@ -2038,7 +2038,7 @@ func TestNewNoteMode_SubmitCreatesNote(t *testing.T) {
 
 	// Type a title
 	for _, r := range "My Test Note" {
-		model, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		model, _ = m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
 		m = model.(Model)
 	}
 
@@ -2068,7 +2068,7 @@ func TestView_HelpOverlayShowsEditorKeys(t *testing.T) {
 	m := newTestModelWithNotes(t)
 	m.showHelp = true
 
-	view := m.View()
+	view := m.View().Content
 	for _, expected := range []string{"Editor", "Next field", "Save & close"} {
 		if !strings.Contains(view, expected) {
 			t.Errorf("help view should contain %q", expected)

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/devenjarvis/moss/internal/db"
 	"github.com/devenjarvis/moss/internal/note"
@@ -70,22 +70,22 @@ func TestEditor_FocusCycling_Tab(t *testing.T) {
 	}
 
 	// Tab cycles: title -> tags -> date -> body -> title
-	e, _, _ = e.Update(tea.KeyMsg{Type: tea.KeyTab})
+	e, _, _ = e.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 	if e.focus != editorFocusTags {
 		t.Errorf("after tab: focus = %d, want %d (tags)", e.focus, editorFocusTags)
 	}
 
-	e, _, _ = e.Update(tea.KeyMsg{Type: tea.KeyTab})
+	e, _, _ = e.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 	if e.focus != editorFocusDate {
 		t.Errorf("after 2nd tab: focus = %d, want %d (date)", e.focus, editorFocusDate)
 	}
 
-	e, _, _ = e.Update(tea.KeyMsg{Type: tea.KeyTab})
+	e, _, _ = e.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 	if e.focus != editorFocusBody {
 		t.Errorf("after 3rd tab: focus = %d, want %d (body)", e.focus, editorFocusBody)
 	}
 
-	e, _, _ = e.Update(tea.KeyMsg{Type: tea.KeyTab})
+	e, _, _ = e.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 	if e.focus != editorFocusTitle {
 		t.Errorf("after 4th tab: focus = %d, want %d (title, wraps)", e.focus, editorFocusTitle)
 	}
@@ -95,12 +95,12 @@ func TestEditor_FocusCycling_ShiftTab(t *testing.T) {
 	e, _ := newTestEditor(t)
 
 	// Shift+Tab goes backwards: title -> body -> date -> tags -> title
-	e, _, _ = e.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	e, _, _ = e.Update(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
 	if e.focus != editorFocusBody {
 		t.Errorf("after shift+tab: focus = %d, want %d (body)", e.focus, editorFocusBody)
 	}
 
-	e, _, _ = e.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	e, _, _ = e.Update(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
 	if e.focus != editorFocusDate {
 		t.Errorf("after 2nd shift+tab: focus = %d, want %d (date)", e.focus, editorFocusDate)
 	}
@@ -110,7 +110,7 @@ func TestEditor_EnterInFrontmatterMovesToBody(t *testing.T) {
 	e, _ := newTestEditor(t)
 
 	// Focus is on title, Enter should move to body
-	e, _, _ = e.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	e, _, _ = e.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if e.focus != editorFocusBody {
 		t.Errorf("after enter in title: focus = %d, want %d (body)", e.focus, editorFocusBody)
 	}
@@ -120,7 +120,7 @@ func TestEditor_EnterInTagsMovesToBody(t *testing.T) {
 	e, _ := newTestEditor(t)
 	e.cycleFocus(1) // move to tags
 
-	e, _, _ = e.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	e, _, _ = e.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if e.focus != editorFocusBody {
 		t.Errorf("after enter in tags: focus = %d, want %d (body)", e.focus, editorFocusBody)
 	}
@@ -129,7 +129,7 @@ func TestEditor_EnterInTagsMovesToBody(t *testing.T) {
 func TestEditor_EscClosesEditor(t *testing.T) {
 	e, _ := newTestEditor(t)
 
-	_, _, shouldClose := e.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	_, _, shouldClose := e.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
 	if !shouldClose {
 		t.Error("Esc should signal editor close")
 	}
@@ -138,7 +138,7 @@ func TestEditor_EscClosesEditor(t *testing.T) {
 func TestEditor_CtrlS_DoesNotClose(t *testing.T) {
 	e, _ := newTestEditor(t)
 
-	e, _, shouldClose := e.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	e, _, shouldClose := e.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
 	if shouldClose {
 		t.Error("Ctrl+S should not close editor")
 	}
@@ -155,7 +155,7 @@ func TestEditor_TypingMarksDirty(t *testing.T) {
 	}
 
 	// Type a character
-	e, _, _ = e.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	e, _, _ = e.Update(tea.KeyPressMsg{Code: 'x', Text: "x"})
 	if !e.dirty {
 		t.Error("should be dirty after typing")
 	}

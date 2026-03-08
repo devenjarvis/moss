@@ -5,10 +5,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/textarea"
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/textarea"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/devenjarvis/moss/internal/db"
 	"github.com/devenjarvis/moss/internal/note"
@@ -94,7 +94,7 @@ func NewEditor(n *note.Note, database *db.DB, width, height int) Editor {
 // Update handles key events for the editor. Returns the updated editor, a command, and whether the editor should close.
 func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd, bool) {
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		key := msg.String()
 
 		switch key {
@@ -228,9 +228,9 @@ func (e *Editor) SetSize(width, height int) {
 	if inputWidth < 10 {
 		inputWidth = 10
 	}
-	e.titleInput.Width = inputWidth
-	e.tagsInput.Width = inputWidth / 2
-	e.dateInput.Width = 12
+	e.titleInput.SetWidth(inputWidth)
+	e.tagsInput.SetWidth(inputWidth / 2)
+	e.dateInput.SetWidth(12)
 
 	bodyHeight := height - 6
 	if bodyHeight < 3 {
