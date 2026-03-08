@@ -883,3 +883,253 @@ func TestTodoCascadeDelete(t *testing.T) {
 		t.Errorf("expected 0 todos after cascade delete, got %d", len(all))
 	}
 }
+
+// --- Search Advanced Tests ---
+
+func TestSearchWithTag(t *testing.T) {
+	db := newTestDB(t)
+
+	notes := []*note.Note{
+		makeNote("/notes/go-web.md", "Go Web", "2024-01-01", []string{"go", "web"}, "Building web apps with Go"),
+		makeNote("/notes/go-cli.md", "Go CLI", "2024-01-02", []string{"go", "cli"}, "Building CLI tools with Go"),
+		makeNote("/notes/rust-web.md", "Rust Web", "2024-01-03", []string{"rust", "web"}, "Building web apps with Rust"),
+	}
+	for _, n := range notes {
+		if err := db.UpsertNote(n); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("search scoped to tag", func(t *testing.T) {
+		results, err := db.SearchWithTag("web", "go")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(results) != 1 {
+			t.Errorf("got %d results, want 1 (only Go+web note)", len(results))
+		}
+		if len(results) > 0 && results[0].Title != "Go Web" {
+			t.Errorf("result = %q, want 'Go Web'", results[0].Title)
+		}
+	})
+
+	t.Run("search matches all with tag", func(t *testing.T) {
+		results, err := db.SearchWithTag("Building", "go")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(results) != 2 {
+			t.Errorf("got %d results, want 2 (both Go notes)", len(results))
+		}
+	})
+
+	t.Run("search no match in tag scope", func(t *testing.T) {
+		results, err := db.SearchWithTag("Rust", "go")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(results) != 0 {
+			t.Errorf("got %d results, want 0 (Rust not in go-tagged notes)", len(results))
+		}
+	})
+}
+
+func TestParseSearchQuery(t *testing.T) {
+	t.Run("plain terms", func(t *testing.T) {
+		pq := ParseSearchQuery("hello world")
+		if pq.GeneralTerms == "" {
+			t.Error("GeneralTerms should not be empty")
+		}
+		if len(pq.ColumnFilters) != 0 {
+			t.Errorf("ColumnFilters should be empty, got %v", pq.ColumnFilters)
+		}
+		if len(pq.SQLFilters) != 0 {
+			t.Errorf("SQLFilters should be empty, got %v", pq.SQLFilters)
+		}
+	})
+
+	t.Run("title prefix", func(t *testing.T) {
+		pq := ParseSearchQuery("title:meeting")
+		if pq.GeneralTerms != "" {
+			t.Errorf("GeneralTerms = %q, want empty", pq.GeneralTerms)
+		}
+		if pq.ColumnFilters["title"] != "meeting" {
+			t.Errorf("ColumnFilters[title] = %q, want 'meeting'", pq.ColumnFilters["title"])
+		}
+	})
+
+	t.Run("tag prefix normalizes to tags", func(t *testing.T) {
+		pq := ParseSearchQuery("tag:work")
+		if pq.ColumnFilters["tags"] != "work" {
+			t.Errorf("ColumnFilters[tags] = %q, want 'work'", pq.ColumnFilters["tags"])
+		}
+	})
+
+	t.Run("sql filter prefix", func(t *testing.T) {
+		pq := ParseSearchQuery("project:moss")
+		if pq.SQLFilters["project"] != "moss" {
+			t.Errorf("SQLFilters[project] = %q, want 'moss'", pq.SQLFilters["project"])
+		}
+	})
+
+	t.Run("mixed terms and prefixes", func(t *testing.T) {
+		pq := ParseSearchQuery("meeting title:standup project:acme")
+		if pq.GeneralTerms == "" {
+			t.Error("GeneralTerms should contain 'meeting'")
+		}
+		if pq.ColumnFilters["title"] != "standup" {
+			t.Errorf("ColumnFilters[title] = %q, want 'standup'", pq.ColumnFilters["title"])
+		}
+		if pq.SQLFilters["project"] != "acme" {
+			t.Errorf("SQLFilters[project] = %q, want 'acme'", pq.SQLFilters["project"])
+		}
+	})
+
+	t.Run("quoted value", func(t *testing.T) {
+		pq := ParseSearchQuery(`project:"my project"`)
+		if pq.SQLFilters["project"] != "my project" {
+			t.Errorf("SQLFilters[project] = %q, want 'my project'", pq.SQLFilters["project"])
+		}
+	})
+
+	t.Run("unknown prefix treated as plain term", func(t *testing.T) {
+		pq := ParseSearchQuery("foo:bar")
+		if pq.GeneralTerms == "" {
+			t.Error("unknown prefix should be treated as general term")
+		}
+		if len(pq.ColumnFilters) != 0 {
+			t.Errorf("ColumnFilters should be empty for unknown prefix, got %v", pq.ColumnFilters)
+		}
+	})
+
+	t.Run("empty input", func(t *testing.T) {
+		pq := ParseSearchQuery("")
+		if pq.GeneralTerms != "" {
+			t.Errorf("GeneralTerms = %q, want empty", pq.GeneralTerms)
+		}
+	})
+
+	t.Run("prefix with empty value", func(t *testing.T) {
+		pq := ParseSearchQuery("title:")
+		if len(pq.ColumnFilters) != 0 {
+			t.Errorf("empty value should not create filter, got %v", pq.ColumnFilters)
+		}
+	})
+
+	t.Run("people and status prefixes", func(t *testing.T) {
+		pq := ParseSearchQuery("people:alice status:active")
+		if pq.SQLFilters["people"] != "alice" {
+			t.Errorf("SQLFilters[people] = %q, want 'alice'", pq.SQLFilters["people"])
+		}
+		if pq.SQLFilters["status"] != "active" {
+			t.Errorf("SQLFilters[status] = %q, want 'active'", pq.SQLFilters["status"])
+		}
+	})
+}
+
+func TestSearchAdvanced(t *testing.T) {
+	db := newTestDB(t)
+
+	notes := []*note.Note{
+		{FilePath: "/notes/meeting.md", Title: "Team Meeting", Date: "2024-01-01", Tags: []string{"work"}, People: []string{"alice"}, Project: "acme", Status: "active", Body: "Discussed project timeline"},
+		{FilePath: "/notes/standup.md", Title: "Daily Standup", Date: "2024-01-02", Tags: []string{"work", "daily"}, People: []string{"bob"}, Project: "acme", Status: "active", Body: "Quick status update"},
+		{FilePath: "/notes/recipe.md", Title: "Pasta Recipe", Date: "2024-01-03", Tags: []string{"cooking"}, Project: "", Status: "", Body: "Boil water and add pasta"},
+	}
+	for _, n := range notes {
+		if err := db.UpsertNote(n); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("general terms only", func(t *testing.T) {
+		pq := ParseSearchQuery("project")
+		results, err := db.SearchAdvanced(pq, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(results) != 1 {
+			t.Errorf("got %d results, want 1 (only meeting body mentions 'project')", len(results))
+		}
+	})
+
+	t.Run("title column filter", func(t *testing.T) {
+		pq := ParseSearchQuery("title:meeting")
+		results, err := db.SearchAdvanced(pq, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(results) != 1 {
+			t.Errorf("got %d results, want 1", len(results))
+		}
+		if len(results) > 0 && results[0].Title != "Team Meeting" {
+			t.Errorf("result = %q, want 'Team Meeting'", results[0].Title)
+		}
+	})
+
+	t.Run("sql filter project", func(t *testing.T) {
+		pq := ParseSearchQuery("project:acme")
+		results, err := db.SearchAdvanced(pq, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(results) != 2 {
+			t.Errorf("got %d results, want 2 (both acme project notes)", len(results))
+		}
+	})
+
+	t.Run("sql filter people", func(t *testing.T) {
+		pq := ParseSearchQuery("people:alice")
+		results, err := db.SearchAdvanced(pq, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(results) != 1 {
+			t.Errorf("got %d results, want 1", len(results))
+		}
+	})
+
+	t.Run("combined fts and sql filter", func(t *testing.T) {
+		pq := ParseSearchQuery("status project:acme")
+		results, err := db.SearchAdvanced(pq, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		// "status" appears in body of standup note, and both work notes have project=acme
+		if len(results) != 1 {
+			t.Errorf("got %d results, want 1 (standup has 'status' in body + acme project)", len(results))
+		}
+	})
+
+	t.Run("with tag scope", func(t *testing.T) {
+		pq := ParseSearchQuery("status")
+		results, err := db.SearchAdvanced(pq, "daily")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(results) != 1 {
+			t.Errorf("got %d results, want 1 (only standup has daily tag)", len(results))
+		}
+	})
+
+	t.Run("empty query returns all notes", func(t *testing.T) {
+		pq := ParseSearchQuery("")
+		results, err := db.SearchAdvanced(pq, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(results) != 3 {
+			t.Errorf("got %d results, want 3 (all notes)", len(results))
+		}
+	})
+
+	t.Run("no matches", func(t *testing.T) {
+		pq := ParseSearchQuery("title:nonexistent")
+		results, err := db.SearchAdvanced(pq, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(results) != 0 {
+			t.Errorf("got %d results, want 0", len(results))
+		}
+	})
+}

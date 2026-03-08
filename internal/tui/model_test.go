@@ -568,6 +568,170 @@ func TestSearchMode_EscapeRestoresNotes(t *testing.T) {
 	}
 }
 
+func TestSearchMode_EnterKeepsResults(t *testing.T) {
+	m := newTestModelWithNotes(t)
+
+	// Enter search mode
+	model, _ := m.Update(keyMsg("/"))
+	m = model.(Model)
+
+	if m.mode != modeSearch {
+		t.Fatalf("mode = %d, want modeSearch", m.mode)
+	}
+
+	// Simulate having filtered results (as if live search ran)
+	m.filteredNotes = m.notes[:1]
+	m.searchQuery = "alpha"
+	m.searchTerms = []string{"alpha"}
+
+	// Press Enter — should exit search, keep results
+	model, _ = m.Update(specialKeyMsg(tea.KeyEnter))
+	m = model.(Model)
+
+	if m.mode != modeNormal {
+		t.Errorf("mode = %d, want modeNormal after Enter", m.mode)
+	}
+	if len(m.filteredNotes) != 1 {
+		t.Errorf("filteredNotes = %d, want 1 (should keep search results)", len(m.filteredNotes))
+	}
+}
+
+func TestSearchMode_EscapePreservesTagFilter(t *testing.T) {
+	m := newTestModelWithNotes(t)
+
+	// Set active tag
+	m.activeTag = "go"
+
+	// Enter search mode
+	model, _ := m.Update(keyMsg("/"))
+	m = model.(Model)
+
+	// Escape should preserve activeTag and re-filter by tag (not show all notes)
+	model, _ = m.Update(specialKeyMsg(tea.KeyEscape))
+	m = model.(Model)
+
+	if m.activeTag != "go" {
+		t.Errorf("activeTag = %q, want 'go' (should preserve tag filter)", m.activeTag)
+	}
+	if m.searchQuery != "" {
+		t.Errorf("searchQuery = %q, want empty after Esc", m.searchQuery)
+	}
+	if m.searchTerms != nil {
+		t.Errorf("searchTerms = %v, want nil after Esc", m.searchTerms)
+	}
+}
+
+func TestSearchMode_SlashClearsSearchState(t *testing.T) {
+	m := newTestModelWithNotes(t)
+
+	// Set previous search state
+	m.searchQuery = "old"
+	m.searchTerms = []string{"old"}
+
+	// Enter search mode
+	model, _ := m.Update(keyMsg("/"))
+	m = model.(Model)
+
+	if m.searchQuery != "" {
+		t.Errorf("searchQuery = %q, want empty when entering search", m.searchQuery)
+	}
+	if m.searchTerms != nil {
+		t.Errorf("searchTerms = %v, want nil when entering search", m.searchTerms)
+	}
+}
+
+func TestExtractSearchTerms(t *testing.T) {
+	tests := []struct {
+		name  string
+		query string
+		want  []string
+	}{
+		{"plain terms", "hello world", []string{"hello", "world"}},
+		{"field prefix extracts value", "title:meeting", []string{"meeting"}},
+		{"mixed", "notes title:standup", []string{"notes", "standup"}},
+		{"trailing colon ignored", "title:", nil},
+		{"quoted value unquoted", `project:myproject`, []string{"myproject"}},
+		{"empty", "", nil},
+		{"unknown prefix extracts value", "foo:bar", []string{"bar"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractSearchTerms(tt.query)
+			if len(got) != len(tt.want) {
+				t.Fatalf("extractSearchTerms(%q) = %v, want %v", tt.query, got, tt.want)
+			}
+			for i := range tt.want {
+				if got[i] != tt.want[i] {
+					t.Errorf("term[%d] = %q, want %q", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestHighlightMatches(t *testing.T) {
+	t.Run("no terms returns original", func(t *testing.T) {
+		result := highlightMatches("hello world", nil)
+		if result != "hello world" {
+			t.Errorf("got %q, want original text", result)
+		}
+	})
+
+	t.Run("contains all text", func(t *testing.T) {
+		result := highlightMatches("hello world", []string{"hello"})
+		// In test environments lipgloss may not emit ANSI codes,
+		// but the result should still contain all original text
+		if !strings.Contains(result, "hello") {
+			t.Error("result should contain 'hello'")
+		}
+		if !strings.Contains(result, " world") {
+			t.Error("result should contain ' world'")
+		}
+	})
+
+	t.Run("case insensitive preserves original case", func(t *testing.T) {
+		result := highlightMatches("Hello World", []string{"hello"})
+		if !strings.Contains(result, "Hello") {
+			t.Error("should preserve original casing of 'Hello'")
+		}
+	})
+
+	t.Run("no match returns original", func(t *testing.T) {
+		result := highlightMatches("hello world", []string{"xyz"})
+		if result != "hello world" {
+			t.Errorf("got %q, want original text when no match", result)
+		}
+	})
+
+	t.Run("multiple terms preserves all text", func(t *testing.T) {
+		result := highlightMatches("hello beautiful world", []string{"hello", "world"})
+		if !strings.Contains(result, "hello") {
+			t.Error("should contain 'hello'")
+		}
+		if !strings.Contains(result, "beautiful") {
+			t.Error("should contain 'beautiful'")
+		}
+		if !strings.Contains(result, "world") {
+			t.Error("should contain 'world'")
+		}
+	})
+
+	t.Run("empty text", func(t *testing.T) {
+		result := highlightMatches("", []string{"hello"})
+		if result != "" {
+			t.Errorf("got %q for empty text, want empty", result)
+		}
+	})
+
+	t.Run("empty terms", func(t *testing.T) {
+		result := highlightMatches("hello", []string{})
+		if result != "hello" {
+			t.Errorf("got %q, want original with empty terms", result)
+		}
+	})
+}
+
 // --- Layout Tests ---
 
 func TestLayoutWidths(t *testing.T) {

@@ -100,6 +100,12 @@ type tagFilterMsg struct {
 	notes []*note.Note
 }
 
+type searchResultsMsg struct {
+	query string
+	notes []*note.Note
+	err   error
+}
+
 type todoToggledMsg struct {
 	err error
 }
@@ -140,6 +146,8 @@ type Model struct {
 
 	// Search
 	searchInput textinput.Model
+	searchQuery string   // active search query text
+	searchTerms []string // terms to highlight in results
 
 	// New note title input
 	newNoteInput textinput.Model
@@ -408,6 +416,14 @@ func loadTodos(database *db.DB, filter string) tea.Cmd {
 	}
 }
 
+func searchNotes(database *db.DB, query, activeTag string) tea.Cmd {
+	return func() tea.Msg {
+		pq := db.ParseSearchQuery(query)
+		notes, err := database.SearchAdvanced(pq, activeTag)
+		return searchResultsMsg{query: query, notes: notes, err: err}
+	}
+}
+
 func toggleTodo(item note.TodoItem, database *db.DB) tea.Cmd {
 	return func() tea.Msg {
 		err := note.ToggleTodo(item.FilePath, item.LineNumber)
@@ -603,6 +619,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statusMsg = fmt.Sprintf("Error: %v", msg.err)
 		return m, clearStatusAfter(5 * time.Second)
 
+	case searchResultsMsg:
+		// Discard stale results from a previous keystroke
+		if m.mode != modeSearch || msg.query != m.searchInput.Value() {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.statusMsg = fmt.Sprintf("Search error: %v", msg.err)
+			return m, clearStatusAfter(3 * time.Second)
+		}
+		m.filteredNotes = msg.notes
+		m.searchQuery = msg.query
+		m.searchTerms = extractSearchTerms(msg.query)
+		m.listCursor = 0
+		m.listOffset = 0
+		if len(m.filteredNotes) > 0 {
+			return m, renderPreview(m.filteredNotes[0])
+		}
+		m.previewContent = ""
+		m.preview.SetContent("")
+		return m, nil
+
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
@@ -656,7 +693,14 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.mode == modeSearch {
 			m.mode = modeNormal
 			m.searchInput.Blur()
-			m.activeTag = ""
+			m.searchQuery = ""
+			m.searchTerms = nil
+			// Preserve active tag filter if set
+			if m.activeTag != "" {
+				m.listCursor = 0
+				m.listOffset = 0
+				return m, m.filterByTag(m.activeTag)
+			}
 			m.filteredNotes = m.notes
 			if m.listCursor >= len(m.filteredNotes) {
 				m.listCursor = max(0, len(m.filteredNotes)-1)
@@ -725,39 +769,36 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.mode == modeSearch {
 		switch key {
 		case "enter":
-			query := m.searchInput.Value()
+			// Exit search mode, keep current results
 			m.mode = modeNormal
 			m.searchInput.Blur()
-			if query == "" {
-				m.filteredNotes = m.notes
-			} else {
-				results, err := m.database.Search(query)
-				if err != nil {
-					m.statusMsg = fmt.Sprintf("Search error: %v", err)
-					m.filteredNotes = m.notes
-				} else {
-					m.filteredNotes = results
-					if len(results) == 0 {
-						m.statusMsg = "No notes found"
-					} else {
-						m.statusMsg = fmt.Sprintf("Found %d notes", len(results))
-					}
-				}
-			}
-			m.listCursor = 0
-			m.listOffset = 0
-			clearCmd := clearStatusAfter(3 * time.Second)
 			if len(m.filteredNotes) > 0 {
-				return m, tea.Batch(renderPreview(m.filteredNotes[0]), clearCmd)
+				m.statusMsg = fmt.Sprintf("Found %d notes", len(m.filteredNotes))
+			} else if m.searchInput.Value() != "" {
+				m.statusMsg = "No notes found"
 			}
-			// Clear preview when no results
-			m.previewContent = ""
-			m.preview.SetContent("")
-			return m, clearCmd
+			return m, clearStatusAfter(3 * time.Second)
 		default:
 			var cmd tea.Cmd
 			m.searchInput, cmd = m.searchInput.Update(msg)
-			return m, cmd
+			// Live search: fire search on every keystroke
+			query := strings.TrimSpace(m.searchInput.Value())
+			if query == "" {
+				// Empty query: restore full list (respecting active tag)
+				if m.activeTag != "" {
+					return m, tea.Batch(cmd, m.filterByTag(m.activeTag))
+				}
+				m.filteredNotes = m.notes
+				m.searchQuery = ""
+				m.searchTerms = nil
+				m.listCursor = 0
+				m.listOffset = 0
+				if len(m.filteredNotes) > 0 {
+					return m, tea.Batch(cmd, renderPreview(m.filteredNotes[0]))
+				}
+				return m, cmd
+			}
+			return m, tea.Batch(cmd, searchNotes(m.database, query, m.activeTag))
 		}
 	}
 
@@ -993,6 +1034,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = modeSearch
 		m.searchInput.SetValue("")
 		m.searchInput.Focus()
+		m.searchQuery = ""
+		m.searchTerms = nil
 		return m, textinput.Blink
 
 	case "c":
@@ -1381,6 +1424,11 @@ func (m Model) renderListPane(width, height int) string {
 
 		display = datePrefix + titleText + indicators
 
+		// Apply search highlighting to display text
+		if len(m.searchTerms) > 0 {
+			display = highlightMatches(display, m.searchTerms)
+		}
+
 		if i == m.listCursor {
 			items = append(items, selectedItemStyle.Render("▸ "+display))
 		} else {
@@ -1516,6 +1564,68 @@ func (m Model) renderStatusBar() string {
 	return statusBarStyle.Render(left + strings.Repeat(" ", gap) + right)
 }
 
+// extractSearchTerms extracts the value portions of a search query for highlighting.
+// Field-prefixed terms like "title:foo" extract "foo", regular terms are kept as-is.
+func extractSearchTerms(query string) []string {
+	tokens := strings.Fields(query)
+	var terms []string
+	for _, t := range tokens {
+		if idx := strings.Index(t, ":"); idx > 0 && idx < len(t)-1 {
+			// Field-prefixed: extract the value
+			val := t[idx+1:]
+			val = strings.Trim(val, `"`)
+			if val != "" {
+				terms = append(terms, val)
+			}
+		} else if !strings.HasSuffix(t, ":") {
+			terms = append(terms, t)
+		}
+	}
+	return terms
+}
+
+// highlightMatches wraps case-insensitive matches of terms in the given style.
+func highlightMatches(text string, terms []string) string {
+	if len(terms) == 0 {
+		return text
+	}
+	lower := strings.ToLower(text)
+	// Mark positions that should be highlighted
+	highlights := make([]bool, len(text))
+	for _, term := range terms {
+		termLower := strings.ToLower(term)
+		start := 0
+		for {
+			idx := strings.Index(lower[start:], termLower)
+			if idx == -1 {
+				break
+			}
+			for j := start + idx; j < start+idx+len(termLower) && j < len(highlights); j++ {
+				highlights[j] = true
+			}
+			start += idx + len(termLower)
+		}
+	}
+	// Build result with styled segments
+	var result strings.Builder
+	inHighlight := false
+	segStart := 0
+	for i := 0; i <= len(text); i++ {
+		currentHL := i < len(text) && highlights[i]
+		if i == len(text) || currentHL != inHighlight {
+			seg := text[segStart:i]
+			if inHighlight {
+				result.WriteString(searchMatchStyle.Render(seg))
+			} else {
+				result.WriteString(seg)
+			}
+			segStart = i
+			inHighlight = currentHL
+		}
+	}
+	return result.String()
+}
+
 func (m Model) helpView() string {
 	help := `
   ┌─────────────────────────────────────┐
@@ -1539,6 +1649,14 @@ func (m Model) helpView() string {
   │    c             Chat with AI       │
   │    s             Sync & re-index    │
   │    T             Todos view         │
+  │                                     │
+  │  Search Syntax                      │
+  │    word          Full-text search   │
+  │    title:word    Search titles      │
+  │    tag:word      Search by tag      │
+  │    project:word  Search by project  │
+  │    people:word   Search by people   │
+  │    status:word   Search by status   │
   │                                     │
   │  General                            │
   │    ?             Toggle help        │

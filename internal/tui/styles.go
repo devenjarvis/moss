@@ -76,4 +76,9 @@ var (
 
 	todoSourceStyle = lipgloss.NewStyle().
 			Foreground(colorMuted) // gray for source note name
+
+	// Search highlighting
+	searchMatchStyle = lipgloss.NewStyle().
+				Background(colorWarning).
+				Foreground(lipgloss.Color("#1E1E2E"))
 )
