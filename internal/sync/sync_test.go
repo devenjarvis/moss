@@ -213,6 +213,90 @@ func TestWatcher_NilOnChange(t *testing.T) {
 	}
 }
 
+func TestWatcher_PauseAndResumeFile(t *testing.T) {
+	dir := t.TempDir()
+	database := newTestDB(t)
+
+	w, err := NewWatcher(dir, database, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = w.Stop() }()
+
+	path := filepath.Join(dir, "test.md")
+
+	// Initially not paused
+	w.mu.Lock()
+	if w.paused[path] {
+		t.Error("file should not be paused initially")
+	}
+	w.mu.Unlock()
+
+	// Pause
+	w.PauseFile(path)
+	w.mu.Lock()
+	if !w.paused[path] {
+		t.Error("file should be paused after PauseFile")
+	}
+	w.mu.Unlock()
+
+	// Resume
+	w.ResumeFile(path)
+	w.mu.Lock()
+	if w.paused[path] {
+		t.Error("file should not be paused after ResumeFile")
+	}
+	w.mu.Unlock()
+}
+
+func TestWatcher_PauseMultipleFiles(t *testing.T) {
+	dir := t.TempDir()
+	database := newTestDB(t)
+
+	w, err := NewWatcher(dir, database, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = w.Stop() }()
+
+	path1 := filepath.Join(dir, "a.md")
+	path2 := filepath.Join(dir, "b.md")
+
+	w.PauseFile(path1)
+	w.PauseFile(path2)
+
+	w.mu.Lock()
+	if !w.paused[path1] || !w.paused[path2] {
+		t.Error("both files should be paused")
+	}
+	w.mu.Unlock()
+
+	// Resume one
+	w.ResumeFile(path1)
+	w.mu.Lock()
+	if w.paused[path1] {
+		t.Error("path1 should be resumed")
+	}
+	if !w.paused[path2] {
+		t.Error("path2 should still be paused")
+	}
+	w.mu.Unlock()
+}
+
+func TestWatcher_ResumeNonPausedFile(t *testing.T) {
+	dir := t.TempDir()
+	database := newTestDB(t)
+
+	w, err := NewWatcher(dir, database, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = w.Stop() }()
+
+	// Should not panic
+	w.ResumeFile(filepath.Join(dir, "nonexistent.md"))
+}
+
 func TestWatcher_NonexistentDir(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "nonexistent")
 	database := newTestDB(t)

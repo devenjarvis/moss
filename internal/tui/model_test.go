@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -1778,5 +1779,315 @@ func TestTodoFilterDefault(t *testing.T) {
 	m := newTestModel(t)
 	if m.todoFilter != "open" {
 		t.Errorf("default todoFilter = %q, want 'open'", m.todoFilter)
+	}
+}
+
+// --- Edit Mode Tests ---
+
+func newTestModelWithRealNotes(t *testing.T) Model {
+	t.Helper()
+	m := newTestModel(t)
+
+	// Create real note files on disk so ParseFile works
+	content := "---\ntitle: Alpha\ndate: 2024-01-03\ntags:\n- go\n---\n\nAlpha body"
+	path := filepath.Join(m.cfg.NotesDir, "2024-01-03-alpha.md")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	notes := []*note.Note{
+		{FilePath: path, Title: "Alpha", Date: "2024-01-03", Body: "Alpha body", WordCount: 2},
+	}
+	m.notes = notes
+	m.filteredNotes = notes
+	return m
+}
+
+func TestModeTransition_EditViaEnter(t *testing.T) {
+	m := newTestModelWithRealNotes(t)
+
+	// Enter on list pane should open editor
+	model, _ := m.Update(specialKeyMsg(tea.KeyEnter))
+	m = model.(Model)
+
+	if m.mode != modeEdit {
+		t.Errorf("after Enter: mode = %d, want %d (modeEdit)", m.mode, modeEdit)
+	}
+	if m.activePane != panePreview {
+		t.Errorf("after Enter: activePane = %d, want %d (panePreview)", m.activePane, panePreview)
+	}
+	if m.editingPath == "" {
+		t.Error("editingPath should be set")
+	}
+}
+
+func TestEditMode_EscClosesAndSyncs(t *testing.T) {
+	m := newTestModelWithRealNotes(t)
+
+	// Enter edit mode
+	model, _ := m.Update(specialKeyMsg(tea.KeyEnter))
+	m = model.(Model)
+
+	if m.mode != modeEdit {
+		t.Fatalf("expected modeEdit, got %d", m.mode)
+	}
+
+	// Esc should close editor and return to normal mode
+	model, _ = m.Update(specialKeyMsg(tea.KeyEscape))
+	m = model.(Model)
+
+	if m.mode != modeNormal {
+		t.Errorf("after Esc: mode = %d, want %d (modeNormal)", m.mode, modeNormal)
+	}
+	if m.editingPath != "" {
+		t.Error("editingPath should be cleared after closing editor")
+	}
+	if !m.syncing {
+		t.Error("should trigger sync after closing editor")
+	}
+}
+
+func TestEditMode_KeysDelegatedToEditor(t *testing.T) {
+	m := newTestModelWithRealNotes(t)
+
+	// Enter edit mode
+	model, _ := m.Update(specialKeyMsg(tea.KeyEnter))
+	m = model.(Model)
+
+	// 'q' should NOT quit (delegated to editor, not interpreted as quit)
+	model, cmd := m.Update(keyMsg("q"))
+	m = model.(Model)
+
+	if m.mode != modeEdit {
+		t.Errorf("'q' in edit mode should not change mode, got %d", m.mode)
+	}
+	if cmd != nil {
+		msg := cmd()
+		if _, ok := msg.(tea.QuitMsg); ok {
+			t.Error("'q' in edit mode should not quit")
+		}
+	}
+}
+
+func TestEditMode_TabDelegatedToEditor(t *testing.T) {
+	m := newTestModelWithRealNotes(t)
+
+	// Enter edit mode
+	model, _ := m.Update(specialKeyMsg(tea.KeyEnter))
+	m = model.(Model)
+
+	initialFocus := m.editor.focus
+
+	// Tab should cycle editor focus, not switch panes
+	model, _ = m.Update(keyMsg("tab"))
+	m = model.(Model)
+
+	if m.mode != modeEdit {
+		t.Error("should still be in edit mode after Tab")
+	}
+	if m.editor.focus == initialFocus {
+		t.Error("editor focus should have changed after Tab")
+	}
+	// Active pane should not have changed
+	if m.activePane != panePreview {
+		t.Errorf("activePane = %d, should stay at panePreview during edit", m.activePane)
+	}
+}
+
+func TestEditMode_EnterOnEmptyList(t *testing.T) {
+	m := newTestModel(t)
+	m.notes = nil
+	m.filteredNotes = nil
+
+	// Enter on empty list should not panic or enter edit mode
+	model, _ := m.Update(specialKeyMsg(tea.KeyEnter))
+	m = model.(Model)
+
+	if m.mode != modeNormal {
+		t.Errorf("Enter on empty list: mode = %d, want %d (modeNormal)", m.mode, modeNormal)
+	}
+}
+
+func TestEditMode_PreviewPaneShowsEditor(t *testing.T) {
+	m := newTestModelWithRealNotes(t)
+
+	// Enter edit mode
+	model, _ := m.Update(specialKeyMsg(tea.KeyEnter))
+	m = model.(Model)
+
+	view := m.View()
+	if !strings.Contains(view, "Editor") {
+		t.Error("view should show 'Editor' pane title in edit mode")
+	}
+}
+
+func TestEditMode_StatusBarShowsEditing(t *testing.T) {
+	m := newTestModelWithRealNotes(t)
+
+	// Enter edit mode
+	model, _ := m.Update(specialKeyMsg(tea.KeyEnter))
+	m = model.(Model)
+
+	status := m.renderStatusBar()
+	if !strings.Contains(status, "Editing") {
+		t.Error("status bar should show 'Editing' in edit mode")
+	}
+	if !strings.Contains(status, "Esc") {
+		t.Error("status bar should mention Esc keybinding in edit mode")
+	}
+}
+
+func TestEditMode_EditorSavedMsg(t *testing.T) {
+	m := newTestModelWithRealNotes(t)
+
+	// Enter edit mode
+	model, _ := m.Update(specialKeyMsg(tea.KeyEnter))
+	m = model.(Model)
+
+	// Simulate a successful save
+	model, _ = m.Update(editorSavedMsg{})
+	m = model.(Model)
+
+	if m.mode != modeEdit {
+		t.Error("should still be in edit mode after save")
+	}
+}
+
+func TestEditMode_EditorSavedMsg_WithRename(t *testing.T) {
+	m := newTestModelWithRealNotes(t)
+
+	// Enter edit mode
+	model, _ := m.Update(specialKeyMsg(tea.KeyEnter))
+	m = model.(Model)
+	oldPath := m.editingPath
+
+	// Simulate save with rename
+	newPath := filepath.Join(m.cfg.NotesDir, "2024-01-03-renamed.md")
+	model, _ = m.Update(editorSavedMsg{newPath: newPath})
+	m = model.(Model)
+
+	if m.editingPath != newPath {
+		t.Errorf("editingPath = %q, want %q", m.editingPath, newPath)
+	}
+	if m.editingPath == oldPath {
+		t.Error("editingPath should have been updated from old path")
+	}
+}
+
+func TestEditMode_EditorSavedMsg_Error(t *testing.T) {
+	m := newTestModelWithRealNotes(t)
+
+	// Enter edit mode
+	model, _ := m.Update(specialKeyMsg(tea.KeyEnter))
+	m = model.(Model)
+
+	model, _ = m.Update(editorSavedMsg{err: fmt.Errorf("write failed")})
+	m = model.(Model)
+
+	if !strings.Contains(m.statusMsg, "Save error") {
+		t.Errorf("statusMsg = %q, should contain 'Save error'", m.statusMsg)
+	}
+}
+
+func TestEditMode_AutoSaveTickDelegated(t *testing.T) {
+	m := newTestModelWithRealNotes(t)
+
+	// Enter edit mode
+	model, _ := m.Update(specialKeyMsg(tea.KeyEnter))
+	m = model.(Model)
+
+	// Set editor dirty and matching tickID
+	m.editor.dirty = true
+	m.editor.tickID = 3
+
+	model, cmd := m.Update(editorAutoSaveTickMsg{id: 3})
+	m = model.(Model)
+
+	if cmd == nil {
+		t.Error("matching auto-save tick should produce save command")
+	}
+}
+
+func TestNoteCreatedMsg_OpensEditor(t *testing.T) {
+	m := newTestModel(t)
+
+	// Create a note file for noteCreatedMsg to parse
+	content := "---\ntitle: New Note\ndate: 2024-02-01\nstatus: active\nsource: written\n---\n\n# New Note\n\n"
+	path := filepath.Join(m.cfg.NotesDir, "2024-02-01-new-note.md")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	model, _ := m.Update(noteCreatedMsg{path: path})
+	m = model.(Model)
+
+	if m.mode != modeEdit {
+		t.Errorf("after noteCreatedMsg: mode = %d, want %d (modeEdit)", m.mode, modeEdit)
+	}
+	if m.editingPath != path {
+		t.Errorf("editingPath = %q, want %q", m.editingPath, path)
+	}
+}
+
+func TestNewNoteMode_SubmitCreatesNote(t *testing.T) {
+	m := newTestModel(t)
+
+	// Enter new note mode
+	model, _ := m.Update(keyMsg("n"))
+	m = model.(Model)
+
+	// Type a title
+	for _, r := range "My Test Note" {
+		model, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = model.(Model)
+	}
+
+	// Submit
+	model, cmd := m.Update(specialKeyMsg(tea.KeyEnter))
+	m = model.(Model)
+
+	if m.mode != modeNormal {
+		t.Errorf("mode = %d, want modeNormal after submitting new note title", m.mode)
+	}
+
+	// Execute the command - should return noteCreatedMsg
+	if cmd == nil {
+		t.Fatal("expected a command from new note submission")
+	}
+	msg := cmd()
+	if _, ok := msg.(noteCreatedMsg); !ok {
+		if _, ok := msg.(errMsg); ok {
+			// errMsg is also acceptable if dir doesn't exist, etc.
+		} else {
+			t.Errorf("expected noteCreatedMsg or errMsg, got %T", msg)
+		}
+	}
+}
+
+func TestView_HelpOverlayShowsEditorKeys(t *testing.T) {
+	m := newTestModelWithNotes(t)
+	m.showHelp = true
+
+	view := m.View()
+	for _, expected := range []string{"Editor", "Next field", "Save & close"} {
+		if !strings.Contains(view, expected) {
+			t.Errorf("help view should contain %q", expected)
+		}
+	}
+}
+
+func TestEditMode_ResizeUpdatesEditor(t *testing.T) {
+	m := newTestModelWithRealNotes(t)
+
+	// Enter edit mode
+	model, _ := m.Update(specialKeyMsg(tea.KeyEnter))
+	m = model.(Model)
+
+	// Resize - should not panic
+	model, _ = m.Update(tea.WindowSizeMsg{Width: 200, Height: 50})
+	m = model.(Model)
+
+	if m.mode != modeEdit {
+		t.Error("should still be in edit mode after resize")
 	}
 }
