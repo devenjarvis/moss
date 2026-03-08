@@ -1274,3 +1274,346 @@ func TestNormalKeysIgnoredInChatMode(t *testing.T) {
 		}
 	}
 }
+
+// --- Todo View Tests ---
+
+func newTestModelWithTodos(t *testing.T) Model {
+	t.Helper()
+	m := newTestModelWithNotes(t)
+	m.todos = []note.TodoItem{
+		{Text: "Buy groceries", Done: false, LineNumber: 1, FilePath: "/notes/a.md", NoteTitle: "Alpha", NoteDate: "2024-01-03", NoteProject: "personal"},
+		{Text: "Write tests", Done: true, LineNumber: 2, FilePath: "/notes/a.md", NoteTitle: "Alpha", NoteDate: "2024-01-03", NoteProject: "moss"},
+		{Text: "Review PR", Done: false, LineNumber: 1, FilePath: "/notes/b.md", NoteTitle: "Beta", NoteDate: "2024-01-02", NoteProject: "moss"},
+	}
+	m.filteredTodos = m.todos
+	m.mode = modeTodos
+	m.todoFilter = "open"
+	return m
+}
+
+func TestTodosMode_EnterViaT(t *testing.T) {
+	m := newTestModelWithNotes(t)
+	if m.mode != modeNormal {
+		t.Fatalf("initial mode = %d, want %d (modeNormal)", m.mode, modeNormal)
+	}
+
+	model, cmd := m.Update(keyMsg("T"))
+	m = model.(Model)
+
+	if m.mode != modeTodos {
+		t.Errorf("mode = %d, want %d (modeTodos)", m.mode, modeTodos)
+	}
+	if m.activePane != paneList {
+		t.Errorf("activePane = %d, want %d (paneList)", m.activePane, paneList)
+	}
+	if m.todoCursor != 0 {
+		t.Errorf("todoCursor = %d, want 0", m.todoCursor)
+	}
+	if cmd == nil {
+		t.Error("expected cmd to load todos")
+	}
+}
+
+func TestTodosMode_ExitViaEsc(t *testing.T) {
+	m := newTestModelWithTodos(t)
+
+	model, _ := m.Update(specialKeyMsg(tea.KeyEsc))
+	m = model.(Model)
+
+	if m.mode != modeNormal {
+		t.Errorf("mode = %d, want %d (modeNormal)", m.mode, modeNormal)
+	}
+}
+
+func TestTodosMode_CursorNavigation(t *testing.T) {
+	m := newTestModelWithTodos(t)
+
+	// Move down
+	model, _ := m.Update(keyMsg("j"))
+	m = model.(Model)
+	if m.todoCursor != 1 {
+		t.Errorf("todoCursor = %d, want 1 after j", m.todoCursor)
+	}
+
+	// Move down again
+	model, _ = m.Update(keyMsg("j"))
+	m = model.(Model)
+	if m.todoCursor != 2 {
+		t.Errorf("todoCursor = %d, want 2 after j", m.todoCursor)
+	}
+
+	// At bottom, should not go further
+	model, _ = m.Update(keyMsg("j"))
+	m = model.(Model)
+	if m.todoCursor != 2 {
+		t.Errorf("todoCursor = %d, want 2 at bottom", m.todoCursor)
+	}
+
+	// Move up
+	model, _ = m.Update(keyMsg("k"))
+	m = model.(Model)
+	if m.todoCursor != 1 {
+		t.Errorf("todoCursor = %d, want 1 after k", m.todoCursor)
+	}
+
+	// Move up to top
+	model, _ = m.Update(keyMsg("k"))
+	m = model.(Model)
+	if m.todoCursor != 0 {
+		t.Errorf("todoCursor = %d, want 0 at top", m.todoCursor)
+	}
+
+	// At top, should not go further
+	model, _ = m.Update(keyMsg("k"))
+	m = model.(Model)
+	if m.todoCursor != 0 {
+		t.Errorf("todoCursor = %d, want 0 at top", m.todoCursor)
+	}
+}
+
+func TestTodosMode_Toggle(t *testing.T) {
+	m := newTestModelWithTodos(t)
+
+	// Space should trigger toggleTodo command
+	_, cmd := m.Update(keyMsg(" "))
+	if cmd == nil {
+		t.Error("expected toggle command on space")
+	}
+
+	// x should also trigger toggle
+	_, cmd = m.Update(keyMsg("x"))
+	if cmd == nil {
+		t.Error("expected toggle command on x")
+	}
+}
+
+func TestTodosMode_FilterCycle(t *testing.T) {
+	m := newTestModelWithTodos(t)
+
+	if m.todoFilter != "open" {
+		t.Fatalf("initial todoFilter = %q, want 'open'", m.todoFilter)
+	}
+
+	// Press f to cycle: open -> done
+	model, cmd := m.Update(keyMsg("f"))
+	m = model.(Model)
+	if m.todoFilter != "done" {
+		t.Errorf("todoFilter = %q, want 'done'", m.todoFilter)
+	}
+	if cmd == nil {
+		t.Error("expected loadTodos command after filter cycle")
+	}
+
+	// Press f again: done -> all
+	model, _ = m.Update(keyMsg("f"))
+	m = model.(Model)
+	if m.todoFilter != "all" {
+		t.Errorf("todoFilter = %q, want 'all'", m.todoFilter)
+	}
+
+	// Press f again: all -> open
+	model, _ = m.Update(keyMsg("f"))
+	m = model.(Model)
+	if m.todoFilter != "open" {
+		t.Errorf("todoFilter = %q, want 'open'", m.todoFilter)
+	}
+}
+
+func TestTodosMode_EnterJumpsToNote(t *testing.T) {
+	m := newTestModelWithTodos(t)
+
+	// Select second todo (from /notes/a.md)
+	model, _ := m.Update(keyMsg("j"))
+	m = model.(Model)
+
+	// Press enter to jump to source note
+	model, _ = m.Update(specialKeyMsg(tea.KeyEnter))
+	m = model.(Model)
+
+	if m.mode != modeNormal {
+		t.Errorf("mode = %d, want %d (modeNormal)", m.mode, modeNormal)
+	}
+}
+
+func TestTodosMode_QuitStillWorks(t *testing.T) {
+	m := newTestModelWithTodos(t)
+
+	_, cmd := m.Update(keyMsg("q"))
+	if cmd == nil {
+		t.Fatal("expected quit command")
+	}
+	msg := cmd()
+	if _, ok := msg.(tea.QuitMsg); !ok {
+		t.Error("expected QuitMsg from q in todos mode")
+	}
+}
+
+func TestTodosMode_NormalKeysIgnored(t *testing.T) {
+	m := newTestModelWithTodos(t)
+
+	// 'n' (new note) should not work in todos mode
+	model, _ := m.Update(keyMsg("n"))
+	m = model.(Model)
+	if m.mode != modeTodos {
+		t.Errorf("mode = %d, want %d (modeTodos) - 'n' should be ignored in todos mode", m.mode, modeTodos)
+	}
+}
+
+func TestTodosLoadedMsg(t *testing.T) {
+	m := newTestModel(t)
+	m.mode = modeTodos
+
+	todos := []note.TodoItem{
+		{Text: "Task 1", Done: false, FilePath: "/notes/a.md"},
+		{Text: "Task 2", Done: true, FilePath: "/notes/b.md"},
+	}
+
+	model, _ := m.Update(todosLoadedMsg{todos: todos})
+	m = model.(Model)
+
+	if len(m.todos) != 2 {
+		t.Errorf("got %d todos, want 2", len(m.todos))
+	}
+	if len(m.filteredTodos) != 2 {
+		t.Errorf("got %d filteredTodos, want 2", len(m.filteredTodos))
+	}
+	if m.todoCursor != 0 {
+		t.Errorf("todoCursor = %d, want 0", m.todoCursor)
+	}
+	if m.todoOffset != 0 {
+		t.Errorf("todoOffset = %d, want 0", m.todoOffset)
+	}
+}
+
+func TestTodosLoadedMsg_Empty(t *testing.T) {
+	m := newTestModel(t)
+	m.mode = modeTodos
+
+	model, _ := m.Update(todosLoadedMsg{todos: nil})
+	m = model.(Model)
+
+	if len(m.todos) != 0 {
+		t.Errorf("expected 0 todos, got %d", len(m.todos))
+	}
+	if m.previewContent != "" {
+		t.Errorf("expected empty preview, got %q", m.previewContent)
+	}
+}
+
+func TestTodoToggledMsg_Error(t *testing.T) {
+	m := newTestModelWithTodos(t)
+
+	model, cmd := m.Update(todoToggledMsg{err: fmt.Errorf("toggle failed")})
+	m = model.(Model)
+
+	if m.statusMsg != "Toggle error: toggle failed" {
+		t.Errorf("statusMsg = %q, want error message", m.statusMsg)
+	}
+	if cmd == nil {
+		t.Error("expected clearStatus command")
+	}
+}
+
+func TestTodoToggledMsg_Success(t *testing.T) {
+	m := newTestModelWithTodos(t)
+
+	_, cmd := m.Update(todoToggledMsg{err: nil})
+
+	if cmd == nil {
+		t.Error("expected loadTodos command after successful toggle")
+	}
+}
+
+func TestTodosView_RenderListPane(t *testing.T) {
+	m := newTestModelWithTodos(t)
+
+	view := m.renderListPane(40, 20)
+	if view == "" {
+		t.Error("expected non-empty list pane in todos mode")
+	}
+	if !strings.Contains(view, "Todos") {
+		t.Error("expected 'Todos' title in list pane")
+	}
+}
+
+func TestTodosView_RenderListPane_Empty(t *testing.T) {
+	m := newTestModel(t)
+	m.mode = modeTodos
+	m.filteredTodos = nil
+
+	view := m.renderListPane(40, 20)
+	if !strings.Contains(view, "No todos found") {
+		t.Error("expected 'No todos found' message for empty todos list")
+	}
+}
+
+func TestTodosView_StatusBar(t *testing.T) {
+	m := newTestModelWithTodos(t)
+
+	status := m.renderStatusBar()
+	if !strings.Contains(status, "todos") {
+		t.Error("expected 'todos' in status bar when in todos mode")
+	}
+	if !strings.Contains(status, "open") {
+		t.Error("expected filter name in status bar")
+	}
+}
+
+func TestTodosView_NoPanic(t *testing.T) {
+	m := newTestModelWithTodos(t)
+
+	// Should not panic with various states
+	_ = m.View()
+
+	// With empty todos
+	m.filteredTodos = nil
+	m.todos = nil
+	_ = m.View()
+}
+
+func TestSyncCompleteMsg_ReloadsTodosWhenInTodosMode(t *testing.T) {
+	m := newTestModelWithTodos(t)
+
+	notes := []*note.Note{
+		{FilePath: "/notes/a.md", Title: "Alpha", Date: "2024-01-03"},
+	}
+	_, cmd := m.Update(syncCompleteMsg{notes: notes})
+
+	if cmd == nil {
+		t.Error("expected command to reload todos after sync in todos mode")
+	}
+}
+
+func TestEnsureTodoVisible(t *testing.T) {
+	m := newTestModel(t)
+	m.height = 10 // small height = listHeight around 4
+
+	// Create more todos than fit on screen
+	var todos []note.TodoItem
+	for i := 0; i < 20; i++ {
+		todos = append(todos, note.TodoItem{Text: fmt.Sprintf("Task %d", i), FilePath: "/notes/a.md"})
+	}
+	m.filteredTodos = todos
+
+	// Move cursor to bottom
+	m.todoCursor = 15
+	m.ensureTodoVisible()
+
+	if m.todoOffset == 0 {
+		t.Error("expected todoOffset to be adjusted for cursor at 15")
+	}
+	if m.todoCursor < m.todoOffset {
+		t.Error("cursor should be >= offset")
+	}
+	listH := m.listHeight()
+	if m.todoCursor >= m.todoOffset+listH {
+		t.Error("cursor should be visible (within offset + listHeight)")
+	}
+}
+
+func TestTodoFilterDefault(t *testing.T) {
+	m := newTestModel(t)
+	if m.todoFilter != "open" {
+		t.Errorf("default todoFilter = %q, want 'open'", m.todoFilter)
+	}
+}

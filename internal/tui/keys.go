@@ -22,6 +22,7 @@ type keyMap struct {
 	Generate   key.Binding
 	TagFilter  key.Binding
 	SortCycle  key.Binding
+	TodoView   key.Binding
 }
 
 var keys = keyMap{
@@ -100,5 +101,9 @@ var keys = keyMap{
 	SortCycle: key.NewBinding(
 		key.WithKeys("o"),
 		key.WithHelp("o", "cycle sort"),
+	),
+	TodoView: key.NewBinding(
+		key.WithKeys("T"),
+		key.WithHelp("T", "todos view"),
 	),
 }

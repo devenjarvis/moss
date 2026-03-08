@@ -66,4 +66,14 @@ var (
 			Foreground(colorSecondary).
 			Background(colorBgAlt).
 			Padding(0, 1)
+
+	// Todos
+	todoDoneStyle = lipgloss.NewStyle().
+			Foreground(colorAccent) // green for [x]
+
+	todoOpenStyle = lipgloss.NewStyle().
+			Foreground(colorWarning) // yellow for [ ]
+
+	todoSourceStyle = lipgloss.NewStyle().
+			Foreground(colorMuted) // gray for source note name
 )

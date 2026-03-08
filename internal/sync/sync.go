@@ -48,6 +48,11 @@ func SyncNotes(notesDir string, database *db.DB) ([]*note.Note, error) {
 			log.Printf("warning: failed to index %s: %v", p, err)
 			continue
 		}
+		// Sync todos for this note
+		todos := n.ParseTodos()
+		if err := database.UpsertTodos(n.FilePath, todos); err != nil {
+			log.Printf("warning: failed to sync todos for %s: %v", p, err)
+		}
 		notes = append(notes, n)
 	}
 
@@ -168,6 +173,11 @@ func (w *Watcher) handleWrite(name string) {
 	if err := w.database.UpsertNote(n); err != nil {
 		log.Printf("warning: failed to index %s: %v", name, err)
 		return
+	}
+	// Sync todos for this note
+	todos := n.ParseTodos()
+	if err := w.database.UpsertTodos(n.FilePath, todos); err != nil {
+		log.Printf("warning: failed to sync todos for %s: %v", name, err)
 	}
 	if w.onChange != nil {
 		w.onChange()
