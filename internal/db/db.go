@@ -138,8 +138,25 @@ func (db *DB) AllNotes() ([]*note.Note, error) {
 	return scanNotes(rows)
 }
 
+// escapeFTS5 wraps each token in double quotes so special FTS5 characters
+// (AND, OR, NOT, parentheses, asterisks, etc.) are treated as literals.
+func escapeFTS5(query string) string {
+	tokens := strings.Fields(query)
+	if len(tokens) == 0 {
+		return query
+	}
+	var escaped []string
+	for _, t := range tokens {
+		// Escape any double quotes inside the token
+		t = strings.ReplaceAll(t, `"`, `""`)
+		escaped = append(escaped, `"`+t+`"`)
+	}
+	return strings.Join(escaped, " ")
+}
+
 // Search performs full-text search across notes.
 func (db *DB) Search(query string) ([]*note.Note, error) {
+	safeQuery := escapeFTS5(query)
 	rows, err := db.conn.Query(`
 		SELECT n.file_path, n.title, n.date, n.tags, n.people, n.project, n.status,
 			n.source, n.summary, n.generated_from, n.generated_prompt, n.word_count, n.has_todos
@@ -147,7 +164,7 @@ func (db *DB) Search(query string) ([]*note.Note, error) {
 		JOIN notes_fts fts ON n.rowid = fts.rowid
 		WHERE notes_fts MATCH ?
 		ORDER BY rank
-	`, query)
+	`, safeQuery)
 	if err != nil {
 		return nil, err
 	}

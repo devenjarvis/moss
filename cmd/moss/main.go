@@ -119,20 +119,89 @@ func queueFrontmatterTasks(cfg config.Config, database *db.DB, worker *ai.Worker
 		return
 	}
 
+	// Collect notes that need frontmatter generation
+	var toProcess []*note.Note
 	for _, n := range notes {
 		if len(n.MissingFrontmatterFields()) > 0 {
-			// Re-read the full note for body content
 			fullNote, err := note.ParseFile(n.FilePath)
 			if err != nil {
 				continue
 			}
-			worker.Submit(ai.Task{
-				Type:  "frontmatter",
-				Note:  fullNote,
-				Model: ai.ModelHaiku,
-			})
+			toProcess = append(toProcess, fullNote)
 		}
 	}
+
+	if len(toProcess) == 0 {
+		return
+	}
+
+	// Create a shared result channel and submit tasks
+	resultCh := make(chan ai.Result, len(toProcess))
+	for _, fullNote := range toProcess {
+		worker.Submit(ai.Task{
+			Type:     "frontmatter",
+			Note:     fullNote,
+			Model:    ai.ModelHaiku,
+			ResultCh: resultCh,
+		})
+	}
+
+	// Process results in background goroutine
+	go func() {
+		for i := 0; i < len(toProcess); i++ {
+			result := <-resultCh
+			if result.Err != nil || result.Output == "" {
+				continue
+			}
+			n := result.Task.Note
+			// Apply generated fields only for fields that are still missing
+			for _, line := range strings.Split(result.Output, "\n") {
+				parts := strings.SplitN(line, ": ", 2)
+				if len(parts) != 2 {
+					continue
+				}
+				key := strings.TrimSpace(parts[0])
+				val := strings.TrimSpace(parts[1])
+				switch key {
+				case "title":
+					if n.Title == "" {
+						n.Title = val
+					}
+				case "date":
+					if n.Date == "" {
+						n.Date = val
+					}
+				case "summary":
+					if n.Summary == "" {
+						n.Summary = val
+					}
+				case "tags":
+					if len(n.Tags) == 0 {
+						val = strings.Trim(val, "[]")
+						for _, t := range strings.Split(val, ",") {
+							t = strings.TrimSpace(t)
+							t = strings.Trim(t, "\"'")
+							if t != "" {
+								n.Tags = append(n.Tags, t)
+							}
+						}
+					}
+				case "status":
+					if n.Status == "" {
+						n.Status = val
+					}
+				case "source":
+					if n.Source == "" {
+						n.Source = val
+					}
+				}
+			}
+			if err := n.WriteFrontmatter(); err != nil {
+				continue
+			}
+			database.UpsertNote(n)
+		}
+	}()
 }
 
 func cmdNew(args []string) {

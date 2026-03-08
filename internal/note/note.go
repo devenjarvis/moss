@@ -110,7 +110,7 @@ func countWords(s string) int {
 func detectTodos(s string) bool {
 	lower := strings.ToLower(s)
 	return strings.Contains(lower, "- [ ]") || strings.Contains(lower, "- [x]") ||
-		strings.Contains(lower, "todo") || strings.Contains(lower, "TODO")
+		strings.Contains(lower, "todo")
 }
 
 // MissingFrontmatterFields returns a list of core fields that are empty.

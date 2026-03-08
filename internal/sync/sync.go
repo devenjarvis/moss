@@ -4,7 +4,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/devenjarvis/moss/internal/db"
 	"github.com/devenjarvis/moss/internal/note"
@@ -95,12 +94,7 @@ func (w *Watcher) Stop() error {
 
 func (w *Watcher) handleEvent(event fsnotify.Event) {
 	name := event.Name
-	if !strings.HasSuffix(name, ".md") {
-		return
-	}
-
-	ext := filepath.Ext(name)
-	if ext != ".md" {
+	if filepath.Ext(name) != ".md" {
 		return
 	}
 
