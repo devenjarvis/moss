@@ -96,6 +96,10 @@ type todosLoadedMsg struct {
 	todos []note.TodoItem
 }
 
+type tagFilterMsg struct {
+	notes []*note.Note
+}
+
 type todoToggledMsg struct {
 	err error
 }
@@ -404,10 +408,25 @@ func loadTodos(database *db.DB, filter string) tea.Cmd {
 	}
 }
 
-func toggleTodo(item note.TodoItem) tea.Cmd {
+func toggleTodo(item note.TodoItem, database *db.DB) tea.Cmd {
 	return func() tea.Msg {
 		err := note.ToggleTodo(item.FilePath, item.LineNumber)
-		return todoToggledMsg{err: err}
+		if err != nil {
+			return todoToggledMsg{err: err}
+		}
+		// Re-parse and re-index the modified file so the DB reflects the change
+		n, err := note.ParseFile(item.FilePath)
+		if err != nil {
+			return todoToggledMsg{err: err}
+		}
+		if err := database.UpsertNote(n); err != nil {
+			return todoToggledMsg{err: err}
+		}
+		todos := n.ParseTodos()
+		if err := database.UpsertTodos(n.FilePath, todos); err != nil {
+			return todoToggledMsg{err: err}
+		}
+		return todoToggledMsg{}
 	}
 }
 
@@ -432,12 +451,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		// Auto-hide chat on narrow terminals
 		m.chatVisible = m.width >= 100
+		// Clamp activePane if chat pane is no longer visible
+		if !m.chatVisible && m.activePane == paneChat {
+			m.activePane = panePreview
+		}
 		m.updateLayout()
 		return m, nil
 
 	case notesLoadedMsg:
 		m.notes = msg.notes
 		m.filteredNotes = msg.notes
+		// Re-apply tag filter if active
+		if m.activeTag != "" {
+			return m, m.filterByTag(m.activeTag)
+		}
 		if len(m.notes) > 0 {
 			return m, renderPreview(m.notes[0])
 		}
@@ -529,6 +556,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.allTags = msg.tags
 		return m, nil
 
+	case tagFilterMsg:
+		m.filteredNotes = msg.notes
+		m.listCursor = 0
+		m.listOffset = 0
+		if len(m.filteredNotes) > 0 {
+			return m, renderPreview(m.filteredNotes[0])
+		}
+		m.previewContent = ""
+		m.preview.SetContent("")
+		return m, nil
+
 	case todosLoadedMsg:
 		m.todos = msg.todos
 		m.filteredTodos = msg.todos
@@ -550,6 +588,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, loadTodos(m.database, m.todoFilter)
 
 	case editorFinishedMsg:
+		if msg.err != nil {
+			m.statusMsg = fmt.Sprintf("Editor error: %v", msg.err)
+			return m, clearStatusAfter(5 * time.Second)
+		}
 		// Re-sync after editing
 		return m, syncNotes(m.cfg.NotesDir, m.database)
 
@@ -614,6 +656,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.mode == modeSearch {
 			m.mode = modeNormal
 			m.searchInput.Blur()
+			m.activeTag = ""
 			m.filteredNotes = m.notes
 			if m.listCursor >= len(m.filteredNotes) {
 				m.listCursor = max(0, len(m.filteredNotes)-1)
@@ -838,13 +881,17 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					}
 				}
 				m.mode = modeNormal
-				return m, renderPreview(m.findNoteByPath(todo.FilePath))
+				n := m.findNoteByPath(todo.FilePath)
+				if n != nil {
+					return m, renderPreview(n)
+				}
+				return m, nil
 			}
 			return m, nil
 		case " ", "x":
 			// Toggle todo
 			if len(m.filteredTodos) > 0 && m.todoCursor < len(m.filteredTodos) {
-				return m, toggleTodo(m.filteredTodos[m.todoCursor])
+				return m, toggleTodo(m.filteredTodos[m.todoCursor], m.database)
 			}
 			return m, nil
 		case "f":
@@ -1047,7 +1094,7 @@ func (m *Model) filterByTag(tag string) tea.Cmd {
 		if err != nil {
 			return errMsg{err}
 		}
-		return notesLoadedMsg{notes: results}
+		return tagFilterMsg{notes: results}
 	}
 }
 
@@ -1226,8 +1273,13 @@ func (m Model) renderListPane(width, height int) string {
 				maxTextLen = width - 10
 				source = ""
 			}
+			if maxTextLen < 0 {
+				maxTextLen = 0
+			}
 			if maxTextLen > 3 && len(todoText) > maxTextLen {
 				todoText = todoText[:maxTextLen-3] + "..."
+			} else if maxTextLen == 0 {
+				todoText = ""
 			}
 
 			var display string
@@ -1316,10 +1368,15 @@ func (m Model) renderListPane(width, height int) string {
 		}
 
 		maxTitleLen := width - 6 - len(datePrefix) - len(indicators)
+		if maxTitleLen < 0 {
+			maxTitleLen = 0
+		}
 		if maxTitleLen > 3 && len(titleText) > maxTitleLen {
 			titleText = titleText[:maxTitleLen-3] + "..."
 		} else if maxTitleLen > 0 && maxTitleLen <= 3 && len(titleText) > maxTitleLen {
 			titleText = titleText[:maxTitleLen]
+		} else if maxTitleLen == 0 {
+			titleText = ""
 		}
 
 		display = datePrefix + titleText + indicators
@@ -1356,7 +1413,9 @@ func (m Model) renderPreviewPane(width, height int) string {
 	title := titleStyle.Render("Preview")
 
 	var content string
-	if len(m.filteredNotes) == 0 {
+	if m.mode == modeTodos && len(m.filteredTodos) == 0 {
+		content = helpStyle.Render("\n  No todos found.\n  Press 'f' to change filter.")
+	} else if m.mode != modeTodos && len(m.filteredNotes) == 0 {
 		content = helpStyle.Render("\n  No notes found.\n  Press 'n' to create one.")
 	} else {
 		content = m.preview.View()

@@ -84,10 +84,26 @@ func ToggleTodo(filePath string, bodyLineNumber int) error {
 	content := string(data)
 	_, body := splitFrontmatter(content)
 
-	// Find where the body starts in the original content
-	bodyStart := strings.Index(content, body)
-	if bodyStart == -1 {
-		bodyStart = 0
+	// Find where the trimmed body starts in the original content.
+	// Search only after the frontmatter closing delimiter to avoid
+	// false matches if body text happens to appear in frontmatter.
+	bodyStart := 0
+	if body != "" && body != content {
+		trimmed := strings.TrimSpace(content)
+		if strings.HasPrefix(trimmed, "---") {
+			start := strings.Index(content, "---")
+			if start != -1 {
+				rest := content[start+3:]
+				end := strings.Index(rest, "---")
+				if end != -1 {
+					searchFrom := start + 3 + end + 3
+					idx := strings.Index(content[searchFrom:], body)
+					if idx != -1 {
+						bodyStart = searchFrom + idx
+					}
+				}
+			}
+		}
 	}
 
 	// Split full file into lines
