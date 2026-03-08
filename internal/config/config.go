@@ -10,7 +10,6 @@ import (
 type Config struct {
 	NotesDir string `yaml:"notes_dir"`
 	DBPath   string `yaml:"db_path"`
-	Editor   string `yaml:"editor"`
 }
 
 func DefaultConfig() Config {
@@ -18,15 +17,7 @@ func DefaultConfig() Config {
 	return Config{
 		NotesDir: filepath.Join(home, "moss", "notes"),
 		DBPath:   filepath.Join(home, "moss", "moss.db"),
-		Editor:   getEditor(),
 	}
-}
-
-func getEditor() string {
-	if e := os.Getenv("EDITOR"); e != "" {
-		return e
-	}
-	return "vi"
 }
 
 func Load() (Config, error) {
@@ -56,9 +47,5 @@ func Load() (Config, error) {
 	if cfg.DBPath == "" {
 		cfg.DBPath = def.DBPath
 	}
-	if cfg.Editor == "" {
-		cfg.Editor = def.Editor
-	}
-
 	return cfg, nil
 }

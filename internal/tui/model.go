@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -41,6 +40,7 @@ const (
 	modeGenerate
 	modeTagFilter
 	modeTodos
+	modeEdit
 )
 
 // Sort modes
@@ -73,10 +73,6 @@ type aiResponseMsg struct {
 type generateCompleteMsg struct {
 	path string
 	err  error
-}
-
-type editorFinishedMsg struct {
-	err error
 }
 
 type errMsg struct {
@@ -186,6 +182,10 @@ type Model struct {
 	todoCursor    int
 	todoOffset    int
 	todoFilter    string // "open", "done", "all"
+
+	// Editor
+	editor      Editor
+	editingPath string
 
 	// Responsive: track which panes are visible
 	chatVisible bool
@@ -338,16 +338,6 @@ func askAI(ctx context.Context, question string, notes []*note.Note) tea.Cmd {
 		response, err := ai.Ask(ctx, question, sb.String())
 		return aiResponseMsg{response, err}
 	}
-}
-
-func openEditor(editor, path string) tea.Cmd {
-	c := exec.Command(editor, path)
-	c.Stdin = os.Stdin
-	c.Stdout = os.Stdout
-	c.Stderr = os.Stderr
-	return tea.ExecProcess(c, func(err error) tea.Msg {
-		return editorFinishedMsg{err}
-	})
 }
 
 func deleteNoteFile(filePath string, database *db.DB) tea.Cmd {
@@ -621,13 +611,54 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, loadTodos(m.database, m.todoFilter)
 
-	case editorFinishedMsg:
-		if msg.err != nil {
-			m.statusMsg = fmt.Sprintf("Editor error: %v", msg.err)
+	case editorAutoSaveTickMsg:
+		if m.mode == modeEdit {
+			var cmd tea.Cmd
+			var shouldClose bool
+			m.editor, cmd, shouldClose = m.editor.Update(msg)
+			if shouldClose {
+				return m, cmd
+			}
+			return m, cmd
+		}
+		return m, nil
+
+	case editorSavedMsg:
+		if m.mode == modeEdit {
+			var cmd tea.Cmd
+			m.editor, cmd, _ = m.editor.Update(msg)
+			if msg.err != nil {
+				m.statusMsg = fmt.Sprintf("Save error: %v", msg.err)
+				return m, tea.Batch(cmd, clearStatusAfter(5*time.Second))
+			}
+			if msg.newPath != "" {
+				// File was renamed - update watcher pause
+				if m.watcher != nil {
+					m.watcher.ResumeFile(m.editingPath)
+					m.watcher.PauseFile(msg.newPath)
+				}
+				m.editingPath = msg.newPath
+			}
+			return m, cmd
+		}
+		return m, nil
+
+	case noteCreatedMsg:
+		parsed, err := note.ParseFile(msg.path)
+		if err != nil {
+			m.statusMsg = fmt.Sprintf("Error: %v", err)
 			return m, clearStatusAfter(5 * time.Second)
 		}
-		// Re-sync after editing
-		return m, syncNotes(m.cfg.NotesDir, m.database)
+		previewW := m.previewWidth()
+		contentH := m.height - 4
+		m.editor = NewEditor(parsed, m.database, previewW-4, contentH-2)
+		m.editingPath = msg.path
+		m.mode = modeEdit
+		m.activePane = panePreview
+		if m.watcher != nil {
+			m.watcher.PauseFile(msg.path)
+		}
+		return m, nil
 
 	case updateAvailableMsg:
 		m.updateVersion = msg.version
@@ -669,6 +700,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Update focused input
 	var cmd tea.Cmd
 	switch {
+	case m.mode == modeEdit:
+		m.editor, cmd, _ = m.editor.Update(msg)
+		return m, cmd
 	case m.mode == modeSearch:
 		m.searchInput, cmd = m.searchInput.Update(msg)
 		return m, cmd
@@ -708,6 +742,23 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, nil
+	}
+
+	// Edit mode: delegate all keys to editor
+	if m.mode == modeEdit {
+		var cmd tea.Cmd
+		var shouldClose bool
+		m.editor, cmd, shouldClose = m.editor.Update(msg)
+		if shouldClose {
+			if m.watcher != nil {
+				m.watcher.ResumeFile(m.editingPath)
+			}
+			m.mode = modeNormal
+			m.editingPath = ""
+			m.syncing = true
+			return m, tea.Batch(cmd, syncNotes(m.cfg.NotesDir, m.database))
+		}
+		return m, cmd
 	}
 
 	// Global escape
@@ -1048,7 +1099,21 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		if m.activePane == paneList && len(m.filteredNotes) > 0 && m.listCursor < len(m.filteredNotes) {
 			n := m.filteredNotes[m.listCursor]
-			return m, openEditor(m.cfg.Editor, n.FilePath)
+			parsed, err := note.ParseFile(n.FilePath)
+			if err != nil {
+				m.statusMsg = fmt.Sprintf("Error: %v", err)
+				return m, clearStatusAfter(5 * time.Second)
+			}
+			previewW := m.previewWidth()
+			contentH := m.height - 4
+			m.editor = NewEditor(parsed, m.database, previewW-4, contentH-2)
+			m.editingPath = n.FilePath
+			m.mode = modeEdit
+			m.activePane = panePreview
+			if m.watcher != nil {
+				m.watcher.PauseFile(n.FilePath)
+			}
+			return m, nil
 		}
 		return m, nil
 
@@ -1143,13 +1208,7 @@ func (m *Model) createNewNote(title string) tea.Cmd {
 		if err != nil {
 			return errMsg{err}
 		}
-		c := exec.Command(m.cfg.Editor, path)
-		c.Stdin = os.Stdin
-		c.Stdout = os.Stdout
-		c.Stderr = os.Stderr
-		return tea.ExecProcess(c, func(err error) tea.Msg {
-			return editorFinishedMsg{err}
-		})()
+		return noteCreatedMsg{path: path}
 	}
 }
 
@@ -1224,6 +1283,10 @@ func (m *Model) updateLayout() {
 
 	if m.previewContent != "" {
 		m.preview.SetContent(m.previewContent)
+	}
+
+	if m.mode == modeEdit {
+		m.editor.SetSize(previewWidth-4, contentHeight-2)
 	}
 }
 
@@ -1481,6 +1544,13 @@ func (m Model) renderPreviewPane(width, height int) string {
 		style = activePaneStyle
 	}
 
+	if m.mode == modeEdit {
+		title := titleStyle.Render("Editor")
+		content := m.editor.View(width-4, height-4)
+		inner := lipgloss.JoinVertical(lipgloss.Left, title, content)
+		return style.Width(width - 2).Height(height - 2).Render(inner)
+	}
+
 	title := titleStyle.Render("Preview")
 
 	var content string
@@ -1522,6 +1592,18 @@ func (m Model) renderChatPane(width, height int) string {
 
 func (m Model) renderStatusBar() string {
 	var parts []string
+
+	if m.mode == modeEdit {
+		parts = append(parts, "Editing: "+m.editor.note.Title)
+		parts = append(parts, helpStyle.Render("Tab: fields  Esc: save & close  Ctrl+S: save"))
+
+		left := strings.Join(parts, " │ ")
+		gap := m.width - lipgloss.Width(left)
+		if gap < 0 {
+			gap = 0
+		}
+		return statusBarStyle.Render(left + strings.Repeat(" ", gap))
+	}
 
 	if m.mode == modeTodos {
 		parts = append(parts, fmt.Sprintf("%d todos (%s)", len(m.filteredTodos), m.todoFilter))
@@ -1665,7 +1747,7 @@ func (m Model) helpView() string {
   │    h/l, ←/→     Switch panes       │
   │    Tab           Next pane          │
   │    Ctrl+d/u      Scroll half page   │
-  │    Enter         Open in editor     │
+  │    Enter         Edit note           │
   │                                     │
   │  Actions                            │
   │    n             New note           │
@@ -1696,6 +1778,13 @@ func (m Model) helpView() string {
   │    enter         Jump to note       │
   │    f             Cycle filter       │
   │    Esc           Back to notes      │
+  │                                     │
+  │  Editor (Enter on note)             │
+  │    Tab           Next field         │
+  │    Shift+Tab     Previous field     │
+  │    Enter         Jump to body       │
+  │    Ctrl+S        Save               │
+  │    Esc           Save & close       │
   │                                     │
   │  List Indicators                    │
   │    *  AI generated note             │

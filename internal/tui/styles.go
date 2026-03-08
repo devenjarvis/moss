@@ -69,4 +69,19 @@ var (
 	searchMatchStyle = lipgloss.NewStyle().
 				Background(colorWarning).
 				Foreground(lipgloss.Color("#1E1E2E"))
+
+	// Editor
+	editorLabelStyle = lipgloss.NewStyle().
+				Foreground(colorSecondary).
+				Bold(true)
+
+	editorSeparatorStyle = lipgloss.NewStyle().
+				Foreground(colorMuted)
+
+	editorDirtyStyle = lipgloss.NewStyle().
+				Foreground(colorWarning).
+				Bold(true)
+
+	editorSavedStyle = lipgloss.NewStyle().
+				Foreground(colorAccent)
 )

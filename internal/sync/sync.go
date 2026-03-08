@@ -70,6 +70,9 @@ type Watcher struct {
 	mu       sync.Mutex
 	pending  map[string]*time.Timer
 	debounce time.Duration
+
+	// Per-file pause (for in-app editing)
+	paused map[string]bool
 }
 
 // NewWatcher creates a file watcher for the notes directory.
@@ -96,6 +99,7 @@ func NewWatcher(notesDir string, database *db.DB, onChange func()) (*Watcher, er
 		onChange: onChange,
 		pending:  make(map[string]*time.Timer),
 		debounce: 200 * time.Millisecond,
+		paused:   make(map[string]bool),
 	}, nil
 }
 
@@ -124,9 +128,30 @@ func (w *Watcher) Stop() error {
 	return w.watcher.Close()
 }
 
+// PauseFile pauses watcher events for the given file path.
+func (w *Watcher) PauseFile(path string) {
+	w.mu.Lock()
+	w.paused[path] = true
+	w.mu.Unlock()
+}
+
+// ResumeFile resumes watcher events for the given file path.
+func (w *Watcher) ResumeFile(path string) {
+	w.mu.Lock()
+	delete(w.paused, path)
+	w.mu.Unlock()
+}
+
 func (w *Watcher) debounceEvent(event fsnotify.Event) {
 	name := event.Name
 	if filepath.Ext(name) != ".md" {
+		return
+	}
+
+	w.mu.Lock()
+	isPaused := w.paused[name]
+	w.mu.Unlock()
+	if isPaused {
 		return
 	}
 
