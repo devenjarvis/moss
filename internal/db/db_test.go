@@ -290,6 +290,184 @@ func TestJoinSplitStrings(t *testing.T) {
 	})
 }
 
+func TestAllTags(t *testing.T) {
+	db := newTestDB(t)
+
+	notes := []*note.Note{
+		makeNote("/notes/n1.md", "Note 1", "2024-01-01", []string{"go", "testing"}, "Body 1"),
+		makeNote("/notes/n2.md", "Note 2", "2024-01-02", []string{"go", "web"}, "Body 2"),
+		makeNote("/notes/n3.md", "Note 3", "2024-01-03", []string{"rust"}, "Body 3"),
+		makeNote("/notes/n4.md", "Note 4", "2024-01-04", nil, "Body 4"),
+	}
+
+	for _, n := range notes {
+		if err := db.UpsertNote(n); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	tags, err := db.AllTags()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Should be sorted alphabetically
+	expected := []string{"go", "rust", "testing", "web"}
+	if len(tags) != len(expected) {
+		t.Fatalf("got %d tags, want %d: %v", len(tags), len(expected), tags)
+	}
+	for i, tag := range expected {
+		if tags[i] != tag {
+			t.Errorf("tags[%d] = %q, want %q", i, tags[i], tag)
+		}
+	}
+}
+
+func TestAllTags_Empty(t *testing.T) {
+	db := newTestDB(t)
+
+	tags, err := db.AllTags()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tags) != 0 {
+		t.Errorf("got %d tags, want 0", len(tags))
+	}
+}
+
+func TestAllTags_NoDuplicates(t *testing.T) {
+	db := newTestDB(t)
+
+	notes := []*note.Note{
+		makeNote("/notes/n1.md", "Note 1", "2024-01-01", []string{"go", "testing"}, "Body 1"),
+		makeNote("/notes/n2.md", "Note 2", "2024-01-02", []string{"go", "testing"}, "Body 2"),
+	}
+
+	for _, n := range notes {
+		if err := db.UpsertNote(n); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	tags, err := db.AllTags()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(tags) != 2 {
+		t.Errorf("got %d tags (should deduplicate), want 2: %v", len(tags), tags)
+	}
+}
+
+func TestAllNotesSorted_ByDate(t *testing.T) {
+	db := newTestDB(t)
+
+	notes := []*note.Note{
+		makeNote("/notes/a.md", "Alpha", "2024-01-01", nil, "Body"),
+		makeNote("/notes/b.md", "Beta", "2024-01-03", nil, "Body"),
+		makeNote("/notes/c.md", "Charlie", "2024-01-02", nil, "Body"),
+	}
+	for _, n := range notes {
+		if err := db.UpsertNote(n); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	result, err := db.AllNotesSorted("date")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result) != 3 {
+		t.Fatalf("got %d notes, want 3", len(result))
+	}
+	// Should be date DESC
+	if result[0].Title != "Beta" {
+		t.Errorf("first note = %q, want Beta (most recent)", result[0].Title)
+	}
+	if result[1].Title != "Charlie" {
+		t.Errorf("second note = %q, want Charlie", result[1].Title)
+	}
+	if result[2].Title != "Alpha" {
+		t.Errorf("third note = %q, want Alpha (oldest)", result[2].Title)
+	}
+}
+
+func TestAllNotesSorted_ByTitle(t *testing.T) {
+	db := newTestDB(t)
+
+	notes := []*note.Note{
+		makeNote("/notes/c.md", "Charlie", "2024-01-01", nil, "Body"),
+		makeNote("/notes/a.md", "Alpha", "2024-01-02", nil, "Body"),
+		makeNote("/notes/b.md", "Beta", "2024-01-03", nil, "Body"),
+	}
+	for _, n := range notes {
+		if err := db.UpsertNote(n); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	result, err := db.AllNotesSorted("title")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result[0].Title != "Alpha" {
+		t.Errorf("first note = %q, want Alpha", result[0].Title)
+	}
+	if result[1].Title != "Beta" {
+		t.Errorf("second note = %q, want Beta", result[1].Title)
+	}
+	if result[2].Title != "Charlie" {
+		t.Errorf("third note = %q, want Charlie", result[2].Title)
+	}
+}
+
+func TestAllNotesSorted_ByWordCount(t *testing.T) {
+	db := newTestDB(t)
+
+	n1 := makeNote("/notes/a.md", "Short", "2024-01-01", nil, "hello")
+	n1.WordCount = 1
+	n2 := makeNote("/notes/b.md", "Long", "2024-01-02", nil, "hello world foo bar baz")
+	n2.WordCount = 5
+	n3 := makeNote("/notes/c.md", "Medium", "2024-01-03", nil, "hello world foo")
+	n3.WordCount = 3
+
+	for _, n := range []*note.Note{n1, n2, n3} {
+		if err := db.UpsertNote(n); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	result, err := db.AllNotesSorted("words")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Should be word_count DESC
+	if result[0].Title != "Long" {
+		t.Errorf("first note = %q, want Long (most words)", result[0].Title)
+	}
+	if result[2].Title != "Short" {
+		t.Errorf("last note = %q, want Short (fewest words)", result[2].Title)
+	}
+}
+
+func TestAllNotesSorted_DefaultFallback(t *testing.T) {
+	db := newTestDB(t)
+
+	n := makeNote("/notes/a.md", "Note", "2024-01-01", nil, "Body")
+	if err := db.UpsertNote(n); err != nil {
+		t.Fatal(err)
+	}
+
+	// Unknown sort field should fall back to date sort
+	result, err := db.AllNotesSorted("unknown")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result) != 1 {
+		t.Fatalf("got %d notes, want 1", len(result))
+	}
+}
+
 func TestNoteFieldsPreservedThroughDB(t *testing.T) {
 	db := newTestDB(t)
 

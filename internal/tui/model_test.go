@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -690,6 +691,539 @@ func TestSetWatcher(t *testing.T) {
 	// We can't easily test with a real watcher without more setup,
 	// but we can verify nil doesn't panic
 	m.SetWatcher(nil)
+}
+
+// --- Keys Not Active in Wrong Mode Tests ---
+
+// --- Confirm Mode Tests ---
+
+func TestConfirmMode_DeleteTrigger(t *testing.T) {
+	m := newTestModelWithNotes(t)
+
+	// Press 'd' to enter confirm mode
+	model, _ := m.Update(keyMsg("d"))
+	m = model.(Model)
+
+	if m.mode != modeConfirm {
+		t.Errorf("after 'd': mode = %d, want %d (modeConfirm)", m.mode, modeConfirm)
+	}
+	if m.confirmMsg == "" {
+		t.Error("confirmMsg should be set")
+	}
+	if m.confirmAction == nil {
+		t.Error("confirmAction should be set")
+	}
+}
+
+func TestConfirmMode_DismissWithN(t *testing.T) {
+	m := newTestModelWithNotes(t)
+
+	// Enter confirm mode
+	model, _ := m.Update(keyMsg("d"))
+	m = model.(Model)
+
+	// Press 'n' to cancel
+	model, _ = m.Update(keyMsg("n"))
+	m = model.(Model)
+
+	if m.mode != modeNormal {
+		t.Errorf("after 'n': mode = %d, want %d (modeNormal)", m.mode, modeNormal)
+	}
+	if m.confirmMsg != "" {
+		t.Error("confirmMsg should be cleared after cancel")
+	}
+	if m.confirmAction != nil {
+		t.Error("confirmAction should be cleared after cancel")
+	}
+}
+
+func TestConfirmMode_DismissWithEsc(t *testing.T) {
+	m := newTestModelWithNotes(t)
+
+	model, _ := m.Update(keyMsg("d"))
+	m = model.(Model)
+
+	model, _ = m.Update(specialKeyMsg(tea.KeyEscape))
+	m = model.(Model)
+
+	if m.mode != modeNormal {
+		t.Errorf("after Esc: mode = %d, want %d (modeNormal)", m.mode, modeNormal)
+	}
+}
+
+func TestConfirmMode_AcceptWithY(t *testing.T) {
+	m := newTestModelWithNotes(t)
+
+	model, _ := m.Update(keyMsg("d"))
+	m = model.(Model)
+
+	// Press 'y' to confirm
+	model, cmd := m.Update(keyMsg("y"))
+	m = model.(Model)
+
+	if m.mode != modeNormal {
+		t.Errorf("after 'y': mode = %d, want %d (modeNormal)", m.mode, modeNormal)
+	}
+	if cmd == nil {
+		t.Error("confirming should return a command (delete action)")
+	}
+}
+
+func TestConfirmMode_IgnoresOtherKeys(t *testing.T) {
+	m := newTestModelWithNotes(t)
+
+	model, _ := m.Update(keyMsg("d"))
+	m = model.(Model)
+
+	// Pressing random keys should stay in confirm mode
+	for _, key := range []string{"q", "j", "k", "/"} {
+		model, _ = m.Update(keyMsg(key))
+		m = model.(Model)
+		if m.mode != modeConfirm {
+			t.Errorf("after %q in confirm mode: mode = %d, want %d (modeConfirm)", key, m.mode, modeConfirm)
+		}
+	}
+}
+
+func TestConfirmMode_EmptyList(t *testing.T) {
+	m := newTestModel(t)
+	m.notes = nil
+	m.filteredNotes = nil
+
+	// Press 'd' with no notes - should stay in normal mode
+	model, _ := m.Update(keyMsg("d"))
+	m = model.(Model)
+
+	if m.mode != modeNormal {
+		t.Errorf("'d' with empty list should stay in modeNormal, got %d", m.mode)
+	}
+}
+
+// --- Delete Message Tests ---
+
+func TestDeleteNoteMsg_Success(t *testing.T) {
+	m := newTestModelWithNotes(t)
+
+	model, _ := m.Update(deleteNoteMsg{})
+	m = model.(Model)
+
+	if m.statusMsg != "Note deleted" {
+		t.Errorf("statusMsg = %q, want 'Note deleted'", m.statusMsg)
+	}
+	if !m.syncing {
+		t.Error("should trigger re-sync after deletion")
+	}
+}
+
+func TestDeleteNoteMsg_Error(t *testing.T) {
+	m := newTestModelWithNotes(t)
+
+	model, _ := m.Update(deleteNoteMsg{err: fmt.Errorf("permission denied")})
+	m = model.(Model)
+
+	if m.statusMsg == "" {
+		t.Error("statusMsg should contain error")
+	}
+}
+
+// --- New Note Mode Tests ---
+
+func TestNewNoteMode_Enter(t *testing.T) {
+	m := newTestModelWithNotes(t)
+
+	model, _ := m.Update(keyMsg("n"))
+	m = model.(Model)
+
+	if m.mode != modeNewNote {
+		t.Errorf("after 'n': mode = %d, want %d (modeNewNote)", m.mode, modeNewNote)
+	}
+}
+
+func TestNewNoteMode_EscapeCancels(t *testing.T) {
+	m := newTestModelWithNotes(t)
+
+	model, _ := m.Update(keyMsg("n"))
+	m = model.(Model)
+
+	model, _ = m.Update(specialKeyMsg(tea.KeyEscape))
+	m = model.(Model)
+
+	if m.mode != modeNormal {
+		t.Errorf("after Esc: mode = %d, want %d (modeNormal)", m.mode, modeNormal)
+	}
+}
+
+func TestNewNoteMode_KeysNotInterpretedAsCommands(t *testing.T) {
+	m := newTestModelWithNotes(t)
+
+	model, _ := m.Update(keyMsg("n"))
+	m = model.(Model)
+
+	// Typing 'q' should not quit
+	model, cmd := m.Update(keyMsg("q"))
+	m = model.(Model)
+
+	if m.mode != modeNewNote {
+		t.Errorf("after 'q' in new note mode: mode = %d, want %d (modeNewNote)", m.mode, modeNewNote)
+	}
+	if cmd != nil {
+		msg := cmd()
+		if _, ok := msg.(tea.QuitMsg); ok {
+			t.Error("'q' in new note mode should not quit")
+		}
+	}
+}
+
+// --- Generate Mode Tests ---
+
+func TestGenerateMode_Enter(t *testing.T) {
+	m := newTestModelWithNotes(t)
+
+	model, _ := m.Update(keyMsg("g"))
+	m = model.(Model)
+
+	if m.mode != modeGenerate {
+		t.Errorf("after 'g': mode = %d, want %d (modeGenerate)", m.mode, modeGenerate)
+	}
+}
+
+func TestGenerateMode_EscapeCancels(t *testing.T) {
+	m := newTestModelWithNotes(t)
+
+	model, _ := m.Update(keyMsg("g"))
+	m = model.(Model)
+
+	model, _ = m.Update(specialKeyMsg(tea.KeyEscape))
+	m = model.(Model)
+
+	if m.mode != modeNormal {
+		t.Errorf("after Esc: mode = %d, want %d (modeNormal)", m.mode, modeNormal)
+	}
+}
+
+func TestGenerateMode_EmptyPromptDoesNothing(t *testing.T) {
+	m := newTestModelWithNotes(t)
+
+	model, _ := m.Update(keyMsg("g"))
+	m = model.(Model)
+
+	// Submit empty prompt
+	model, _ = m.Update(specialKeyMsg(tea.KeyEnter))
+	m = model.(Model)
+
+	if m.mode != modeNormal {
+		t.Errorf("mode = %d, want %d (modeNormal)", m.mode, modeNormal)
+	}
+	if m.aiPending != 0 {
+		t.Errorf("aiPending = %d, want 0 (empty prompt should not generate)", m.aiPending)
+	}
+}
+
+func TestGenerateCompleteMsg_Success(t *testing.T) {
+	m := newTestModelWithNotes(t)
+	m.aiPending = 1
+
+	model, _ := m.Update(generateCompleteMsg{path: "/notes/generated.md"})
+	m = model.(Model)
+
+	if m.aiPending != 0 {
+		t.Errorf("aiPending = %d, want 0", m.aiPending)
+	}
+	if m.statusMsg == "" {
+		t.Error("statusMsg should contain generated path")
+	}
+	if !m.syncing {
+		t.Error("should trigger re-sync after generation")
+	}
+}
+
+func TestGenerateCompleteMsg_Error(t *testing.T) {
+	m := newTestModelWithNotes(t)
+	m.aiPending = 1
+
+	model, _ := m.Update(generateCompleteMsg{err: fmt.Errorf("AI unavailable")})
+	m = model.(Model)
+
+	if m.aiPending != 0 {
+		t.Errorf("aiPending = %d, want 0", m.aiPending)
+	}
+	if m.statusMsg == "" {
+		t.Error("statusMsg should contain error")
+	}
+}
+
+// --- Tag Filter Mode Tests ---
+
+func TestTagFilterMode_Enter(t *testing.T) {
+	m := newTestModelWithNotes(t)
+
+	model, cmd := m.Update(keyMsg("t"))
+	m = model.(Model)
+
+	if m.mode != modeTagFilter {
+		t.Errorf("after 't': mode = %d, want %d (modeTagFilter)", m.mode, modeTagFilter)
+	}
+	if cmd == nil {
+		t.Error("should return commands (blink + load tags)")
+	}
+}
+
+func TestTagFilterMode_EscapeClearsFilter(t *testing.T) {
+	m := newTestModelWithNotes(t)
+	m.activeTag = "go" // pretend a tag filter is active
+	m.filteredNotes = m.notes[:1]
+
+	// Enter tag filter mode
+	model, _ := m.Update(keyMsg("t"))
+	m = model.(Model)
+
+	// Escape should clear the tag filter
+	model, _ = m.Update(specialKeyMsg(tea.KeyEscape))
+	m = model.(Model)
+
+	if m.mode != modeNormal {
+		t.Errorf("mode = %d, want %d (modeNormal)", m.mode, modeNormal)
+	}
+	if m.activeTag != "" {
+		t.Errorf("activeTag = %q, should be cleared", m.activeTag)
+	}
+	if len(m.filteredNotes) != len(m.notes) {
+		t.Error("filteredNotes should be restored to all notes")
+	}
+}
+
+func TestTagsLoadedMsg(t *testing.T) {
+	m := newTestModelWithNotes(t)
+
+	model, _ := m.Update(tagsLoadedMsg{tags: []string{"go", "rust", "web"}})
+	m = model.(Model)
+
+	if len(m.allTags) != 3 {
+		t.Errorf("allTags = %d, want 3", len(m.allTags))
+	}
+}
+
+// --- Sort Cycling Tests ---
+
+func TestSortCycling(t *testing.T) {
+	m := newTestModelWithNotes(t)
+
+	if m.sortMode != sortDate {
+		t.Fatalf("initial sortMode = %q, want %q", m.sortMode, sortDate)
+	}
+
+	// Cycle: date -> title
+	model, _ := m.Update(keyMsg("o"))
+	m = model.(Model)
+	if m.sortMode != sortTitle {
+		t.Errorf("after 1st 'o': sortMode = %q, want %q", m.sortMode, sortTitle)
+	}
+
+	// title -> modified
+	model, _ = m.Update(keyMsg("o"))
+	m = model.(Model)
+	if m.sortMode != sortModified {
+		t.Errorf("after 2nd 'o': sortMode = %q, want %q", m.sortMode, sortModified)
+	}
+
+	// modified -> words
+	model, _ = m.Update(keyMsg("o"))
+	m = model.(Model)
+	if m.sortMode != sortWords {
+		t.Errorf("after 3rd 'o': sortMode = %q, want %q", m.sortMode, sortWords)
+	}
+
+	// words -> date (wraps around)
+	model, _ = m.Update(keyMsg("o"))
+	m = model.(Model)
+	if m.sortMode != sortDate {
+		t.Errorf("after 4th 'o': sortMode = %q, want %q (should wrap)", m.sortMode, sortDate)
+	}
+}
+
+func TestSortCycling_ResetsCursor(t *testing.T) {
+	m := newTestModelWithNotes(t)
+	m.listCursor = 2
+	m.listOffset = 1
+
+	model, _ := m.Update(keyMsg("o"))
+	m = model.(Model)
+
+	if m.listCursor != 0 {
+		t.Errorf("listCursor = %d, want 0 (reset after sort change)", m.listCursor)
+	}
+	if m.listOffset != 0 {
+		t.Errorf("listOffset = %d, want 0 (reset after sort change)", m.listOffset)
+	}
+}
+
+// --- Responsive Pane Layout Tests ---
+
+func TestResponsiveLayout_NarrowHidesChat(t *testing.T) {
+	m := newTestModel(t)
+
+	// Simulate narrow terminal
+	model, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 40})
+	m = model.(Model)
+
+	if m.chatVisible {
+		t.Error("chatVisible should be false on narrow terminal (< 100)")
+	}
+	if m.chatWidth() != 0 {
+		t.Errorf("chatWidth() = %d, want 0 when chat hidden", m.chatWidth())
+	}
+}
+
+func TestResponsiveLayout_WideShowsChat(t *testing.T) {
+	m := newTestModel(t)
+
+	model, _ := m.Update(tea.WindowSizeMsg{Width: 150, Height: 40})
+	m = model.(Model)
+
+	if !m.chatVisible {
+		t.Error("chatVisible should be true on wide terminal (>= 100)")
+	}
+	if m.chatWidth() == 0 {
+		t.Error("chatWidth() should be > 0 when chat visible")
+	}
+}
+
+func TestResponsiveLayout_ChatKeyShowsHiddenChat(t *testing.T) {
+	m := newTestModelWithNotes(t)
+
+	// Simulate narrow terminal
+	model, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 40})
+	m = model.(Model)
+
+	if m.chatVisible {
+		t.Fatal("chat should be hidden initially on narrow terminal")
+	}
+
+	// Press 'c' to show chat
+	model, _ = m.Update(keyMsg("c"))
+	m = model.(Model)
+
+	if !m.chatVisible {
+		t.Error("chatVisible should be true after pressing 'c'")
+	}
+	if m.mode != modeChat {
+		t.Errorf("mode = %d, want %d (modeChat)", m.mode, modeChat)
+	}
+}
+
+func TestResponsiveLayout_TabSkipsHiddenChat(t *testing.T) {
+	m := newTestModelWithNotes(t)
+
+	// Simulate narrow terminal
+	model, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 40})
+	m = model.(Model)
+
+	// Tab from list should go to preview
+	model, _ = m.Update(keyMsg("tab"))
+	m = model.(Model)
+	if m.activePane != panePreview {
+		t.Errorf("after tab: activePane = %d, want %d (panePreview)", m.activePane, panePreview)
+	}
+
+	// Tab from preview should wrap to list (skipping hidden chat)
+	model, _ = m.Update(keyMsg("tab"))
+	m = model.(Model)
+	if m.activePane != paneList {
+		t.Errorf("after 2nd tab: activePane = %d, want %d (paneList, wraps around)", m.activePane, paneList)
+	}
+}
+
+func TestResponsiveLayout_RightKeyStopsAtPreview(t *testing.T) {
+	m := newTestModelWithNotes(t)
+
+	// Simulate narrow terminal
+	model, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 40})
+	m = model.(Model)
+
+	// Move right to preview
+	model, _ = m.Update(keyMsg("l"))
+	m = model.(Model)
+	if m.activePane != panePreview {
+		t.Errorf("after 'l': activePane = %d, want %d", m.activePane, panePreview)
+	}
+
+	// Another right should stay at preview (chat is hidden)
+	model, _ = m.Update(keyMsg("l"))
+	m = model.(Model)
+	if m.activePane != panePreview {
+		t.Errorf("after 2nd 'l': activePane = %d, should stay at %d (chat hidden)", m.activePane, panePreview)
+	}
+}
+
+// --- View Rendering Tests for New Features ---
+
+func TestView_ConfirmDialog(t *testing.T) {
+	m := newTestModelWithNotes(t)
+
+	// Enter confirm mode
+	model, _ := m.Update(keyMsg("d"))
+	m = model.(Model)
+
+	view := m.View()
+	if view == "" {
+		t.Error("View() should not be empty in confirm mode")
+	}
+}
+
+func TestView_NoPanicNarrowTerminal(t *testing.T) {
+	m := newTestModelWithNotes(t)
+
+	model, _ := m.Update(tea.WindowSizeMsg{Width: 60, Height: 20})
+	m = model.(Model)
+
+	// Should not panic on narrow terminal
+	view := m.View()
+	if view == "" {
+		t.Error("View() should not be empty on narrow terminal")
+	}
+}
+
+func TestView_HelpOverlayShowsNewKeys(t *testing.T) {
+	m := newTestModelWithNotes(t)
+	m.showHelp = true
+
+	view := m.View()
+	// Verify new keybindings are in help
+	for _, expected := range []string{"Delete note", "Generate AI note", "Filter by tag", "Cycle sort"} {
+		if !strings.Contains(view, expected) {
+			t.Errorf("help view should contain %q", expected)
+		}
+	}
+}
+
+func TestStatusBar_ShowsActiveTag(t *testing.T) {
+	m := newTestModelWithNotes(t)
+	m.activeTag = "go"
+
+	view := m.View()
+	if !strings.Contains(view, "tag:go") {
+		t.Error("status bar should show active tag filter")
+	}
+}
+
+func TestStatusBar_ShowsSortMode(t *testing.T) {
+	m := newTestModelWithNotes(t)
+	m.sortMode = sortTitle
+
+	view := m.View()
+	if !strings.Contains(view, "sort:title") {
+		t.Error("status bar should show non-default sort mode")
+	}
+}
+
+func TestStatusBar_HidesDefaultSort(t *testing.T) {
+	m := newTestModelWithNotes(t)
+	m.sortMode = sortDate
+
+	view := m.View()
+	if strings.Contains(view, "sort:date") {
+		t.Error("status bar should not show default sort mode")
+	}
 }
 
 // --- Keys Not Active in Wrong Mode Tests ---

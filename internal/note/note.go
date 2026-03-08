@@ -198,6 +198,41 @@ func slugify(s string) string {
 	return strings.Trim(s, "-")
 }
 
+// RenameToTitle renames the note file to match its frontmatter title.
+// Returns the new file path, or the original path if no rename was needed.
+func (n *Note) RenameToTitle() (string, error) {
+	if n.Title == "" {
+		return n.FilePath, nil
+	}
+
+	dir := filepath.Dir(n.FilePath)
+	slug := slugify(n.Title)
+	date := n.Date
+	if date == "" {
+		date = time.Now().Format("2006-01-02")
+	}
+
+	newFilename := fmt.Sprintf("%s-%s.md", date, slug)
+	newPath := filepath.Join(dir, newFilename)
+
+	// Don't rename if path is already correct
+	if newPath == n.FilePath {
+		return n.FilePath, nil
+	}
+
+	// Don't overwrite an existing file
+	if _, err := os.Stat(newPath); err == nil {
+		return n.FilePath, nil
+	}
+
+	if err := os.Rename(n.FilePath, newPath); err != nil {
+		return n.FilePath, err
+	}
+
+	n.FilePath = newPath
+	return newPath, nil
+}
+
 // ListNotes returns all markdown files in the given directory.
 func ListNotes(dir string) ([]string, error) {
 	if err := os.MkdirAll(dir, 0755); err != nil {

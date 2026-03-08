@@ -2,6 +2,8 @@ package db
 
 import (
 	"database/sql"
+	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/devenjarvis/moss/internal/note"
@@ -182,6 +184,67 @@ func (db *DB) FilterByTag(tag string) ([]*note.Note, error) {
 		WHERE ',' || tags || ',' LIKE '%,' || ? || ',%'
 		ORDER BY date DESC
 	`, tag)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return scanNotes(rows)
+}
+
+// AllTags returns all unique tags across all notes, sorted alphabetically.
+func (db *DB) AllTags() ([]string, error) {
+	rows, err := db.conn.Query("SELECT tags FROM notes WHERE tags != ''")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	seen := make(map[string]struct{})
+	for rows.Next() {
+		var tags string
+		if err := rows.Scan(&tags); err != nil {
+			return nil, err
+		}
+		for _, t := range splitStrings(tags) {
+			t = strings.TrimSpace(t)
+			if t != "" {
+				seen[t] = struct{}{}
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	var result []string
+	for t := range seen {
+		result = append(result, t)
+	}
+	// Sort alphabetically
+	sort.Strings(result)
+	return result, nil
+}
+
+// AllNotesSorted returns all notes sorted by the specified field.
+func (db *DB) AllNotesSorted(sortBy string) ([]*note.Note, error) {
+	var orderClause string
+	switch sortBy {
+	case "title":
+		orderClause = "ORDER BY title ASC, date DESC"
+	case "modified":
+		orderClause = "ORDER BY last_modified DESC, title ASC"
+	case "words":
+		orderClause = "ORDER BY word_count DESC, title ASC"
+	default:
+		orderClause = "ORDER BY date DESC, title ASC"
+	}
+
+	rows, err := db.conn.Query(fmt.Sprintf(`
+		SELECT file_path, title, date, tags, people, project, status, source,
+			summary, generated_from, generated_prompt, word_count, has_todos, body
+		FROM notes %s
+	`, orderClause))
 	if err != nil {
 		return nil, err
 	}

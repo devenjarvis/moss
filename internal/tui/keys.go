@@ -18,6 +18,10 @@ type keyMap struct {
 	ScrollUp   key.Binding
 	ScrollDown key.Binding
 	ChatFocus  key.Binding
+	Delete     key.Binding
+	Generate   key.Binding
+	TagFilter  key.Binding
+	SortCycle  key.Binding
 }
 
 var keys = keyMap{
@@ -80,5 +84,21 @@ var keys = keyMap{
 	ChatFocus: key.NewBinding(
 		key.WithKeys("c"),
 		key.WithHelp("c", "chat"),
+	),
+	Delete: key.NewBinding(
+		key.WithKeys("d"),
+		key.WithHelp("d", "delete note"),
+	),
+	Generate: key.NewBinding(
+		key.WithKeys("g"),
+		key.WithHelp("g", "generate note"),
+	),
+	TagFilter: key.NewBinding(
+		key.WithKeys("t"),
+		key.WithHelp("t", "filter by tag"),
+	),
+	SortCycle: key.NewBinding(
+		key.WithKeys("o"),
+		key.WithHelp("o", "cycle sort"),
 	),
 }
