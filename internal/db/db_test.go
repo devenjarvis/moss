@@ -541,3 +541,345 @@ func TestNoteFieldsPreservedThroughDB(t *testing.T) {
 		t.Errorf("GeneratedFrom = %v, want 2 entries", got.GeneratedFrom)
 	}
 }
+
+// --- Todo Tests ---
+
+func TestUpsertTodos(t *testing.T) {
+	db := newTestDB(t)
+
+	// Insert a note first (FK constraint)
+	n := makeNote("/notes/tasks.md", "Tasks", "2024-01-01", []string{"work"}, "- [ ] Task 1")
+	n.HasTodos = true
+	if err := db.UpsertNote(n); err != nil {
+		t.Fatal(err)
+	}
+
+	todos := []note.TodoItem{
+		{FilePath: "/notes/tasks.md", LineNumber: 1, Text: "Task 1", Done: false, NoteTitle: "Tasks", NoteDate: "2024-01-01", NoteTags: []string{"work"}, NoteProject: "acme"},
+		{FilePath: "/notes/tasks.md", LineNumber: 2, Text: "Task 2", Done: true, NoteTitle: "Tasks", NoteDate: "2024-01-01", NoteTags: []string{"work"}, NoteProject: "acme"},
+	}
+
+	if err := db.UpsertTodos("/notes/tasks.md", todos); err != nil {
+		t.Fatalf("UpsertTodos: %v", err)
+	}
+
+	// Verify todos were inserted
+	all, err := db.AllTodos("all")
+	if err != nil {
+		t.Fatalf("AllTodos: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("got %d todos, want 2", len(all))
+	}
+}
+
+func TestUpsertTodos_ReplacesExisting(t *testing.T) {
+	db := newTestDB(t)
+
+	n := makeNote("/notes/tasks.md", "Tasks", "2024-01-01", nil, "body")
+	n.HasTodos = true
+	if err := db.UpsertNote(n); err != nil {
+		t.Fatal(err)
+	}
+
+	// Insert initial todos
+	initial := []note.TodoItem{
+		{FilePath: "/notes/tasks.md", LineNumber: 1, Text: "Old task", Done: false, NoteTitle: "Tasks"},
+	}
+	if err := db.UpsertTodos("/notes/tasks.md", initial); err != nil {
+		t.Fatal(err)
+	}
+
+	// Replace with new todos
+	updated := []note.TodoItem{
+		{FilePath: "/notes/tasks.md", LineNumber: 1, Text: "New task 1", Done: false, NoteTitle: "Tasks"},
+		{FilePath: "/notes/tasks.md", LineNumber: 2, Text: "New task 2", Done: true, NoteTitle: "Tasks"},
+	}
+	if err := db.UpsertTodos("/notes/tasks.md", updated); err != nil {
+		t.Fatal(err)
+	}
+
+	all, err := db.AllTodos("all")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("got %d todos, want 2 after replacement", len(all))
+	}
+	if all[0].Text != "New task 1" {
+		t.Errorf("todo[0].Text = %q, want 'New task 1'", all[0].Text)
+	}
+}
+
+func TestUpsertTodos_ClearsWithNil(t *testing.T) {
+	db := newTestDB(t)
+
+	n := makeNote("/notes/tasks.md", "Tasks", "2024-01-01", nil, "body")
+	if err := db.UpsertNote(n); err != nil {
+		t.Fatal(err)
+	}
+
+	todos := []note.TodoItem{
+		{FilePath: "/notes/tasks.md", LineNumber: 1, Text: "Task", Done: false, NoteTitle: "Tasks"},
+	}
+	if err := db.UpsertTodos("/notes/tasks.md", todos); err != nil {
+		t.Fatal(err)
+	}
+
+	// Clear by passing nil
+	if err := db.UpsertTodos("/notes/tasks.md", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	all, err := db.AllTodos("all")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 0 {
+		t.Errorf("expected 0 todos after clearing, got %d", len(all))
+	}
+}
+
+func TestAllTodos_FilterOpen(t *testing.T) {
+	db := newTestDB(t)
+
+	n := makeNote("/notes/tasks.md", "Tasks", "2024-01-01", nil, "body")
+	if err := db.UpsertNote(n); err != nil {
+		t.Fatal(err)
+	}
+
+	todos := []note.TodoItem{
+		{FilePath: "/notes/tasks.md", LineNumber: 1, Text: "Open task", Done: false, NoteTitle: "Tasks"},
+		{FilePath: "/notes/tasks.md", LineNumber: 2, Text: "Done task", Done: true, NoteTitle: "Tasks"},
+	}
+	if err := db.UpsertTodos("/notes/tasks.md", todos); err != nil {
+		t.Fatal(err)
+	}
+
+	open, err := db.AllTodos("open")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(open) != 1 {
+		t.Fatalf("got %d open todos, want 1", len(open))
+	}
+	if open[0].Text != "Open task" {
+		t.Errorf("open todo text = %q, want 'Open task'", open[0].Text)
+	}
+	if open[0].Done {
+		t.Error("open todo should not be done")
+	}
+}
+
+func TestAllTodos_FilterDone(t *testing.T) {
+	db := newTestDB(t)
+
+	n := makeNote("/notes/tasks.md", "Tasks", "2024-01-01", nil, "body")
+	if err := db.UpsertNote(n); err != nil {
+		t.Fatal(err)
+	}
+
+	todos := []note.TodoItem{
+		{FilePath: "/notes/tasks.md", LineNumber: 1, Text: "Open task", Done: false, NoteTitle: "Tasks"},
+		{FilePath: "/notes/tasks.md", LineNumber: 2, Text: "Done task", Done: true, NoteTitle: "Tasks"},
+	}
+	if err := db.UpsertTodos("/notes/tasks.md", todos); err != nil {
+		t.Fatal(err)
+	}
+
+	done, err := db.AllTodos("done")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(done) != 1 {
+		t.Fatalf("got %d done todos, want 1", len(done))
+	}
+	if done[0].Text != "Done task" {
+		t.Errorf("done todo text = %q, want 'Done task'", done[0].Text)
+	}
+}
+
+func TestAllTodos_FilterAll(t *testing.T) {
+	db := newTestDB(t)
+
+	n := makeNote("/notes/tasks.md", "Tasks", "2024-01-01", nil, "body")
+	if err := db.UpsertNote(n); err != nil {
+		t.Fatal(err)
+	}
+
+	todos := []note.TodoItem{
+		{FilePath: "/notes/tasks.md", LineNumber: 1, Text: "Open", Done: false, NoteTitle: "Tasks"},
+		{FilePath: "/notes/tasks.md", LineNumber: 2, Text: "Done", Done: true, NoteTitle: "Tasks"},
+	}
+	if err := db.UpsertTodos("/notes/tasks.md", todos); err != nil {
+		t.Fatal(err)
+	}
+
+	all, err := db.AllTodos("all")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("got %d todos with 'all' filter, want 2", len(all))
+	}
+}
+
+func TestAllTodos_PreservesMetadata(t *testing.T) {
+	db := newTestDB(t)
+
+	n := makeNote("/notes/tasks.md", "Tasks", "2024-01-01", []string{"work"}, "body")
+	if err := db.UpsertNote(n); err != nil {
+		t.Fatal(err)
+	}
+
+	todos := []note.TodoItem{
+		{
+			FilePath:    "/notes/tasks.md",
+			LineNumber:  1,
+			Text:        "Important task",
+			Done:        false,
+			NoteTitle:   "Tasks",
+			NoteDate:    "2024-01-01",
+			NoteTags:    []string{"work", "urgent"},
+			NotePeople:  []string{"alice"},
+			NoteProject: "acme",
+		},
+	}
+	if err := db.UpsertTodos("/notes/tasks.md", todos); err != nil {
+		t.Fatal(err)
+	}
+
+	all, err := db.AllTodos("all")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 1 {
+		t.Fatalf("got %d todos, want 1", len(all))
+	}
+
+	got := all[0]
+	if got.NoteTitle != "Tasks" {
+		t.Errorf("NoteTitle = %q, want Tasks", got.NoteTitle)
+	}
+	if got.NoteDate != "2024-01-01" {
+		t.Errorf("NoteDate = %q, want 2024-01-01", got.NoteDate)
+	}
+	if len(got.NoteTags) != 2 || got.NoteTags[0] != "work" {
+		t.Errorf("NoteTags = %v, want [work, urgent]", got.NoteTags)
+	}
+	if len(got.NotePeople) != 1 || got.NotePeople[0] != "alice" {
+		t.Errorf("NotePeople = %v, want [alice]", got.NotePeople)
+	}
+	if got.NoteProject != "acme" {
+		t.Errorf("NoteProject = %q, want acme", got.NoteProject)
+	}
+}
+
+func TestAllTodos_OrderByDateDescThenFile(t *testing.T) {
+	db := newTestDB(t)
+
+	n1 := makeNote("/notes/old.md", "Old", "2024-01-01", nil, "body")
+	n2 := makeNote("/notes/new.md", "New", "2024-01-15", nil, "body")
+	if err := db.UpsertNote(n1); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpsertNote(n2); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.UpsertTodos("/notes/old.md", []note.TodoItem{
+		{FilePath: "/notes/old.md", LineNumber: 1, Text: "Old task", NoteDate: "2024-01-01", NoteTitle: "Old"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpsertTodos("/notes/new.md", []note.TodoItem{
+		{FilePath: "/notes/new.md", LineNumber: 1, Text: "New task", NoteDate: "2024-01-15", NoteTitle: "New"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	all, err := db.AllTodos("all")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("got %d todos, want 2", len(all))
+	}
+	// Most recent date first
+	if all[0].NoteDate != "2024-01-15" {
+		t.Errorf("expected newest first, got date %q", all[0].NoteDate)
+	}
+}
+
+func TestTodoProjects(t *testing.T) {
+	db := newTestDB(t)
+
+	n := makeNote("/notes/tasks.md", "Tasks", "2024-01-01", nil, "body")
+	if err := db.UpsertNote(n); err != nil {
+		t.Fatal(err)
+	}
+
+	todos := []note.TodoItem{
+		{FilePath: "/notes/tasks.md", LineNumber: 1, Text: "Task 1", Done: false, NoteTitle: "Tasks", NoteProject: "alpha"},
+		{FilePath: "/notes/tasks.md", LineNumber: 2, Text: "Task 2", Done: false, NoteTitle: "Tasks", NoteProject: "beta"},
+		{FilePath: "/notes/tasks.md", LineNumber: 3, Text: "Task 3", Done: true, NoteTitle: "Tasks", NoteProject: "gamma"},
+		{FilePath: "/notes/tasks.md", LineNumber: 4, Text: "Task 4", Done: false, NoteTitle: "Tasks", NoteProject: ""},
+	}
+	if err := db.UpsertTodos("/notes/tasks.md", todos); err != nil {
+		t.Fatal(err)
+	}
+
+	projects, err := db.TodoProjects()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Should only include projects from open todos, excluding empty, sorted alphabetically
+	if len(projects) != 2 {
+		t.Fatalf("got %d projects, want 2: %v", len(projects), projects)
+	}
+	if projects[0] != "alpha" || projects[1] != "beta" {
+		t.Errorf("projects = %v, want [alpha, beta]", projects)
+	}
+}
+
+func TestTodoProjects_Empty(t *testing.T) {
+	db := newTestDB(t)
+
+	projects, err := db.TodoProjects()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(projects) != 0 {
+		t.Errorf("expected 0 projects, got %v", projects)
+	}
+}
+
+func TestTodoCascadeDelete(t *testing.T) {
+	db := newTestDB(t)
+
+	n := makeNote("/notes/tasks.md", "Tasks", "2024-01-01", nil, "body")
+	if err := db.UpsertNote(n); err != nil {
+		t.Fatal(err)
+	}
+
+	todos := []note.TodoItem{
+		{FilePath: "/notes/tasks.md", LineNumber: 1, Text: "Task", Done: false, NoteTitle: "Tasks"},
+	}
+	if err := db.UpsertTodos("/notes/tasks.md", todos); err != nil {
+		t.Fatal(err)
+	}
+
+	// Delete the note — todos should cascade delete
+	if err := db.DeleteNote("/notes/tasks.md"); err != nil {
+		t.Fatal(err)
+	}
+
+	all, err := db.AllTodos("all")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 0 {
+		t.Errorf("expected 0 todos after cascade delete, got %d", len(all))
+	}
+}
