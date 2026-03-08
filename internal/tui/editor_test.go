@@ -277,6 +277,150 @@ func TestEditor_View_SavedIndicator(t *testing.T) {
 	}
 }
 
+// Helper to create an editor focused on body with given content and cursor at end.
+func newBodyEditor(t *testing.T, body string) Editor {
+	t.Helper()
+	e, _ := newTestEditor(t)
+	e.setFocus(editorFocusBody)
+	e.body.SetValue(body)
+	// SetValue resets cursor to end; move to beginning for predictable positioning
+	e.body.MoveToBegin()
+	return e
+}
+
+func TestEditor_SuperB_InsertsBoldMarkers(t *testing.T) {
+	e := newBodyEditor(t, "hello")
+	// Cursor is at beginning; press super+b
+	e, _, close := e.Update(tea.KeyPressMsg{Code: 'b', Mod: tea.ModSuper})
+	if close {
+		t.Fatal("super+b should not close editor")
+	}
+	got := e.body.Value()
+	if got != "****hello" {
+		t.Errorf("body = %q, want %q", got, "****hello")
+	}
+	if e.body.Column() != 2 {
+		t.Errorf("cursor col = %d, want 2 (between bold markers)", e.body.Column())
+	}
+	if !e.dirty {
+		t.Error("should be dirty after super+b")
+	}
+}
+
+func TestEditor_SuperB_ToggleOff(t *testing.T) {
+	e := newBodyEditor(t, "hello")
+	// Insert bold markers first
+	e, _, _ = e.Update(tea.KeyPressMsg{Code: 'b', Mod: tea.ModSuper})
+	// Cursor should be between **|** — press super+b again to toggle off
+	e, _, _ = e.Update(tea.KeyPressMsg{Code: 'b', Mod: tea.ModSuper})
+	got := e.body.Value()
+	if got != "hello" {
+		t.Errorf("after toggle off: body = %q, want %q", got, "hello")
+	}
+}
+
+func TestEditor_SuperI_InsertsItalicMarkers(t *testing.T) {
+	e := newBodyEditor(t, "hello")
+	e, _, _ = e.Update(tea.KeyPressMsg{Code: 'i', Mod: tea.ModSuper})
+	got := e.body.Value()
+	if got != "**hello" {
+		t.Errorf("body = %q, want %q", got, "**hello")
+	}
+	if e.body.Column() != 1 {
+		t.Errorf("cursor col = %d, want 1 (between italic markers)", e.body.Column())
+	}
+}
+
+func TestEditor_SuperI_ToggleOff(t *testing.T) {
+	e := newBodyEditor(t, "hello")
+	e, _, _ = e.Update(tea.KeyPressMsg{Code: 'i', Mod: tea.ModSuper})
+	e, _, _ = e.Update(tea.KeyPressMsg{Code: 'i', Mod: tea.ModSuper})
+	got := e.body.Value()
+	if got != "hello" {
+		t.Errorf("after toggle off: body = %q, want %q", got, "hello")
+	}
+}
+
+func TestEditor_SuperI_NotConfusedByBold(t *testing.T) {
+	e := newBodyEditor(t, "hello")
+	// Insert bold markers: **|**hello
+	e, _, _ = e.Update(tea.KeyPressMsg{Code: 'b', Mod: tea.ModSuper})
+	// Now press super+i — should NOT remove bold, should insert italic
+	e, _, _ = e.Update(tea.KeyPressMsg{Code: 'i', Mod: tea.ModSuper})
+	got := e.body.Value()
+	// Should have italic markers inserted between the bold markers: ****|****hello
+	if got != "******hello" {
+		t.Errorf("body = %q, want %q", got, "******hello")
+	}
+}
+
+func TestEditor_Super1_TogglesH1(t *testing.T) {
+	e := newBodyEditor(t, "hello")
+	e, _, _ = e.Update(tea.KeyPressMsg{Code: '1', Mod: tea.ModSuper})
+	got := e.body.Value()
+	if got != "# hello" {
+		t.Errorf("body = %q, want %q", got, "# hello")
+	}
+}
+
+func TestEditor_Super1_ToggleOff(t *testing.T) {
+	e := newBodyEditor(t, "# hello")
+	e, _, _ = e.Update(tea.KeyPressMsg{Code: '1', Mod: tea.ModSuper})
+	got := e.body.Value()
+	if got != "hello" {
+		t.Errorf("after toggle off: body = %q, want %q", got, "hello")
+	}
+}
+
+func TestEditor_Super2_TogglesH2(t *testing.T) {
+	e := newBodyEditor(t, "hello")
+	e, _, _ = e.Update(tea.KeyPressMsg{Code: '2', Mod: tea.ModSuper})
+	got := e.body.Value()
+	if got != "## hello" {
+		t.Errorf("body = %q, want %q", got, "## hello")
+	}
+}
+
+func TestEditor_Super3_TogglesH3(t *testing.T) {
+	e := newBodyEditor(t, "hello")
+	e, _, _ = e.Update(tea.KeyPressMsg{Code: '3', Mod: tea.ModSuper})
+	got := e.body.Value()
+	if got != "### hello" {
+		t.Errorf("body = %q, want %q", got, "### hello")
+	}
+}
+
+func TestEditor_Heading_SwitchLevel(t *testing.T) {
+	e := newBodyEditor(t, "## hello")
+	// Switch from H2 to H1
+	e, _, _ = e.Update(tea.KeyPressMsg{Code: '1', Mod: tea.ModSuper})
+	got := e.body.Value()
+	if got != "# hello" {
+		t.Errorf("body = %q, want %q", got, "# hello")
+	}
+}
+
+func TestEditor_MarkdownShortcuts_NoOpWhenNotBody(t *testing.T) {
+	e, _ := newTestEditor(t)
+	// Focus is on title (default)
+	originalBody := e.body.Value()
+
+	e, _, _ = e.Update(tea.KeyPressMsg{Code: 'b', Mod: tea.ModSuper})
+	if e.body.Value() != originalBody {
+		t.Error("super+b should be a no-op when not focused on body")
+	}
+
+	e, _, _ = e.Update(tea.KeyPressMsg{Code: 'i', Mod: tea.ModSuper})
+	if e.body.Value() != originalBody {
+		t.Error("super+i should be a no-op when not focused on body")
+	}
+
+	e, _, _ = e.Update(tea.KeyPressMsg{Code: '1', Mod: tea.ModSuper})
+	if e.body.Value() != originalBody {
+		t.Error("super+1 should be a no-op when not focused on body")
+	}
+}
+
 func TestEditor_FilePath(t *testing.T) {
 	e, n := newTestEditor(t)
 	if e.FilePath() != n.FilePath {
