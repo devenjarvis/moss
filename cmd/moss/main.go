@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/devenjarvis/moss/internal/ai"
 	"github.com/devenjarvis/moss/internal/config"
@@ -114,7 +114,7 @@ func runTUI() {
 	}
 
 	// Run the TUI
-	p := tea.NewProgram(model, tea.WithAltScreen())
+	p := tea.NewProgram(model)
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)

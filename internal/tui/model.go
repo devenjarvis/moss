@@ -8,11 +8,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/textinput"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/textinput"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/glamour"
-	"github.com/charmbracelet/lipgloss"
 
 	"github.com/devenjarvis/moss/internal/ai"
 	"github.com/devenjarvis/moss/internal/config"
@@ -221,8 +221,8 @@ func New(cfg config.Config, database *db.DB, worker *ai.Worker) Model {
 	tagi.Placeholder = "Tag name..."
 	tagi.CharLimit = 100
 
-	preview := viewport.New(0, 0)
-	chatVp := viewport.New(0, 0)
+	preview := viewport.New()
+	chatVp := viewport.New()
 
 	return Model{
 		cfg:           cfg,
@@ -693,7 +693,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.preview.SetContent("")
 		return m, nil
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	}
 
@@ -723,7 +723,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 
 	// Confirm mode: only y/n/esc are valid
@@ -1002,7 +1002,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			return m, nil
-		case " ", "x":
+		case "space", "x":
 			// Toggle todo
 			if len(m.filteredTodos) > 0 && m.todoCursor < len(m.filteredTodos) {
 				return m, toggleTodo(m.filteredTodos[m.todoCursor], m.database)
@@ -1273,12 +1273,12 @@ func (m *Model) updateLayout() {
 	chatWidth := m.chatWidth()
 	contentHeight := m.height - 4 // status bar + borders
 
-	m.preview.Width = previewWidth - 4
-	m.preview.Height = contentHeight - 2
+	m.preview.SetWidth(previewWidth - 4)
+	m.preview.SetHeight(contentHeight - 2)
 
 	if m.chatVisible {
-		m.chatViewport.Width = chatWidth - 4
-		m.chatViewport.Height = contentHeight - 6 // leave room for input
+		m.chatViewport.SetWidth(chatWidth - 4)
+		m.chatViewport.SetHeight(contentHeight - 6) // leave room for input
 	}
 
 	if m.previewContent != "" {
@@ -1333,13 +1333,18 @@ func (m *Model) updateChatViewport() {
 	m.chatViewport.GotoBottom()
 }
 
-func (m Model) View() string {
+func (m Model) View() tea.View {
+	var v tea.View
+	v.AltScreen = true
+
 	if m.width == 0 {
-		return "Loading..."
+		v.SetContent("Loading...")
+		return v
 	}
 
 	if m.showHelp {
-		return m.helpView()
+		v.SetContent(m.helpView())
+		return v
 	}
 
 	listW := m.listWidth()
@@ -1362,7 +1367,8 @@ func (m Model) View() string {
 	// Status bar
 	status := m.renderStatusBar()
 
-	return lipgloss.JoinVertical(lipgloss.Left, body, status)
+	v.SetContent(lipgloss.JoinVertical(lipgloss.Left, body, status))
+	return v
 }
 
 func (m Model) renderListPane(width, height int) string {
