@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -15,6 +17,7 @@ import (
 	"github.com/devenjarvis/moss/internal/note"
 	msync "github.com/devenjarvis/moss/internal/sync"
 	"github.com/devenjarvis/moss/internal/tui"
+	"github.com/devenjarvis/moss/internal/version"
 )
 
 func main() {
@@ -28,6 +31,10 @@ func main() {
 			cmdSync()
 		case "generate":
 			cmdGenerate(os.Args[2:])
+		case "uninstall":
+			cmdUninstall(os.Args[2:])
+		case "version", "--version", "-v":
+			fmt.Println("moss " + version.Full())
 		case "help", "--help", "-h":
 			printUsage()
 		default:
@@ -43,14 +50,16 @@ func main() {
 }
 
 func printUsage() {
-	fmt.Println(`Moss - A TUI note-taking app
-
+	fmt.Printf("Moss %s - AI-powered note-taking TUI\n", version.Version)
+	fmt.Println(`
 Usage:
   moss                    Launch the TUI
   moss new [title]        Create a new note and open in $EDITOR
   moss ask "question"     Query across your notes
   moss sync               Scan for new/changed files and rebuild index
   moss generate "prompt"  Generate a new note from a prompt
+  moss uninstall [--all]  Remove moss (preserves notes by default)
+  moss version            Show version information
   moss help               Show this help message`)
 }
 
@@ -365,6 +374,113 @@ func cmdGenerate(args []string) {
 	}
 
 	fmt.Printf("Generated: %s\n", path)
+}
+
+func cmdUninstall(args []string) {
+	removeAll := false
+	for _, arg := range args {
+		if arg == "--all" {
+			removeAll = true
+		}
+	}
+
+	cfg := mustLoadConfig()
+
+	// Determine binary location
+	execPath, err := os.Executable()
+	if err != nil {
+		execPath = "(could not determine)"
+	} else {
+		execPath, _ = filepath.EvalSymlinks(execPath)
+	}
+
+	home, _ := os.UserHomeDir()
+	configPath := filepath.Join(home, "moss", "config.yaml")
+	versionCheck := filepath.Join(home, "moss", ".version-check")
+
+	fmt.Println("Moss Uninstall")
+	fmt.Println("==============")
+	fmt.Println()
+	fmt.Println("This will remove:")
+	fmt.Printf("  Binary:    %s\n", execPath)
+	fmt.Printf("  Database:  %s\n", cfg.DBPath)
+	fmt.Printf("  Config:    %s\n", configPath)
+
+	if removeAll {
+		fmt.Println()
+		fmt.Printf("  Notes:     %s (ALL NOTES WILL BE DELETED)\n", cfg.NotesDir)
+	} else {
+		fmt.Println()
+		fmt.Println("Your notes will be PRESERVED:")
+		fmt.Printf("  Notes:     %s\n", cfg.NotesDir)
+		fmt.Println()
+		fmt.Println("To also remove notes, run: moss uninstall --all")
+	}
+
+	fmt.Println()
+	fmt.Print("Continue? [y/N]: ")
+
+	reader := bufio.NewReader(os.Stdin)
+	answer, _ := reader.ReadString('\n')
+	answer = strings.TrimSpace(strings.ToLower(answer))
+
+	if answer != "y" && answer != "yes" {
+		fmt.Println("Uninstall cancelled.")
+		return
+	}
+
+	fmt.Println()
+
+	// Remove database
+	removeFile(cfg.DBPath)
+	removeFile(cfg.DBPath + "-wal")
+	removeFile(cfg.DBPath + "-shm")
+
+	// Remove config
+	removeFile(configPath)
+
+	// Remove version check cache
+	removeFile(versionCheck)
+
+	// Remove notes if --all
+	if removeAll {
+		if err := os.RemoveAll(cfg.NotesDir); err != nil {
+			fmt.Fprintf(os.Stderr, "  Warning: could not remove %s: %v\n", cfg.NotesDir, err)
+		} else {
+			fmt.Printf("  Removed %s\n", cfg.NotesDir)
+		}
+		// Try to remove the ~/moss directory if empty
+		mossDir := filepath.Join(home, "moss")
+		_ = os.Remove(mossDir) // only succeeds if empty
+	}
+
+	// Remove binary last (process can continue after unlinking on Unix)
+	if execPath != "(could not determine)" {
+		if err := os.Remove(execPath); err != nil {
+			fmt.Fprintf(os.Stderr, "  Warning: could not remove binary %s: %v\n", execPath, err)
+			fmt.Println("  You may need to remove it manually (e.g., with sudo).")
+		} else {
+			fmt.Printf("  Removed %s\n", execPath)
+		}
+	}
+
+	fmt.Println()
+	if removeAll {
+		fmt.Println("Uninstall complete.")
+	} else {
+		fmt.Printf("Uninstall complete. Your notes are still at %s\n", cfg.NotesDir)
+	}
+}
+
+func removeFile(path string) {
+	if _, err := os.Stat(path); err != nil {
+		return // doesn't exist
+	}
+	if err := os.Remove(path); err != nil {
+		fmt.Fprintf(os.Stderr, "  Warning: could not remove %s: %v\n", path, err)
+	} else {
+		fmt.Printf("  Removed %s\n", path)
+	}
 }
 
 func extractFrontmatter(content string) (string, string) {
