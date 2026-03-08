@@ -11,12 +11,30 @@ import (
 )
 
 // SyncNotes scans the notes directory and updates the database index.
+// It also removes stale entries for files that no longer exist on disk.
 func SyncNotes(notesDir string, database *db.DB) ([]*note.Note, error) {
 	paths, err := note.ListNotes(notesDir)
 	if err != nil {
 		return nil, err
 	}
 
+	// Build set of current file paths on disk
+	onDisk := make(map[string]struct{}, len(paths))
+	for _, p := range paths {
+		onDisk[p] = struct{}{}
+	}
+
+	// Remove stale DB entries for files no longer on disk
+	existing, err := database.AllNotes()
+	if err == nil {
+		for _, n := range existing {
+			if _, ok := onDisk[n.FilePath]; !ok {
+				database.DeleteNote(n.FilePath)
+			}
+		}
+	}
+
+	// Upsert current notes
 	var notes []*note.Note
 	for _, p := range paths {
 		n, err := note.ParseFile(p)

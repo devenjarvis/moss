@@ -328,7 +328,6 @@ func cmdGenerate(args []string) {
 	}
 
 	// Parse the generated content to extract the title for the filename
-	tmpNote := &note.Note{}
 	frontmatter, _ := extractFrontmatter(content)
 	title := "generated"
 	if frontmatter != "" {
@@ -341,7 +340,6 @@ func cmdGenerate(args []string) {
 			}
 		}
 	}
-	_ = tmpNote
 
 	// Write the file
 	path, err := note.CreateNew(cfg.NotesDir, title)

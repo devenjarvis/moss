@@ -127,7 +127,7 @@ func (db *DB) DeleteNote(filePath string) error {
 func (db *DB) AllNotes() ([]*note.Note, error) {
 	rows, err := db.conn.Query(`
 		SELECT file_path, title, date, tags, people, project, status, source,
-			summary, generated_from, generated_prompt, word_count, has_todos
+			summary, generated_from, generated_prompt, word_count, has_todos, body
 		FROM notes ORDER BY date DESC, title ASC
 	`)
 	if err != nil {
@@ -159,7 +159,7 @@ func (db *DB) Search(query string) ([]*note.Note, error) {
 	safeQuery := escapeFTS5(query)
 	rows, err := db.conn.Query(`
 		SELECT n.file_path, n.title, n.date, n.tags, n.people, n.project, n.status,
-			n.source, n.summary, n.generated_from, n.generated_prompt, n.word_count, n.has_todos
+			n.source, n.summary, n.generated_from, n.generated_prompt, n.word_count, n.has_todos, n.body
 		FROM notes n
 		JOIN notes_fts fts ON n.rowid = fts.rowid
 		WHERE notes_fts MATCH ?
@@ -177,7 +177,7 @@ func (db *DB) Search(query string) ([]*note.Note, error) {
 func (db *DB) FilterByTag(tag string) ([]*note.Note, error) {
 	rows, err := db.conn.Query(`
 		SELECT file_path, title, date, tags, people, project, status, source,
-			summary, generated_from, generated_prompt, word_count, has_todos
+			summary, generated_from, generated_prompt, word_count, has_todos, body
 		FROM notes
 		WHERE ',' || tags || ',' LIKE '%,' || ? || ',%'
 		ORDER BY date DESC
@@ -201,6 +201,7 @@ func scanNotes(rows *sql.Rows) ([]*note.Note, error) {
 			&n.FilePath, &n.Title, &n.Date, &tags, &people,
 			&n.Project, &n.Status, &n.Source, &n.Summary,
 			&genFrom, &n.GeneratedPrompt, &n.WordCount, &hasTodos,
+			&n.Body,
 		)
 		if err != nil {
 			return nil, err

@@ -251,7 +251,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.notes = msg.notes
 		m.filteredNotes = msg.notes
 		m.statusMsg = fmt.Sprintf("Synced %d notes", len(msg.notes))
-		// Clamp cursor to valid range
 		clearCmd := clearStatusAfter(3 * time.Second)
 		// Clamp cursor to valid range
 		if len(m.filteredNotes) == 0 {
@@ -330,6 +329,13 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.mode = modeNormal
 			m.searchInput.Blur()
 			m.filteredNotes = m.notes
+			if m.listCursor >= len(m.filteredNotes) {
+				m.listCursor = max(0, len(m.filteredNotes)-1)
+			}
+			m.listOffset = 0
+			if len(m.filteredNotes) > 0 {
+				return m, renderPreview(m.filteredNotes[m.listCursor])
+			}
 			return m, nil
 		}
 		if m.mode == modeChat {
@@ -482,7 +488,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "enter":
-		if m.activePane == paneList && len(m.filteredNotes) > 0 {
+		if m.activePane == paneList && len(m.filteredNotes) > 0 && m.listCursor < len(m.filteredNotes) {
 			n := m.filteredNotes[m.listCursor]
 			return m, openEditor(m.cfg.Editor, n.FilePath)
 		}
@@ -540,7 +546,11 @@ func (m *Model) ensureListVisible() {
 
 func (m *Model) listHeight() int {
 	// Account for borders, title, status bar
-	return m.height - 6
+	h := m.height - 6
+	if h < 1 {
+		return 1
+	}
+	return h
 }
 
 func (m *Model) updateLayout() {
