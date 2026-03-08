@@ -82,20 +82,26 @@ func ToggleTodo(filePath string, bodyLineNumber int) error {
 	}
 
 	content := string(data)
+	_, body := splitFrontmatter(content)
 
-	// Find where the body starts by locating the closing frontmatter delimiter
-	// in the original content (not the trimmed version from splitFrontmatter,
-	// which can match at the wrong position).
+	// Find where the trimmed body starts in the original content.
+	// Search only after the frontmatter closing delimiter to avoid
+	// false matches if body text happens to appear in frontmatter.
 	bodyStart := 0
-	trimmed := strings.TrimSpace(content)
-	if strings.HasPrefix(trimmed, "---") {
-		// Find opening delimiter in original content
-		start := strings.Index(content, "---")
-		if start != -1 {
-			rest := content[start+3:]
-			end := strings.Index(rest, "---")
-			if end != -1 {
-				bodyStart = start + 3 + end + 3
+	if body != "" && body != content {
+		trimmed := strings.TrimSpace(content)
+		if strings.HasPrefix(trimmed, "---") {
+			start := strings.Index(content, "---")
+			if start != -1 {
+				rest := content[start+3:]
+				end := strings.Index(rest, "---")
+				if end != -1 {
+					searchFrom := start + 3 + end + 3
+					idx := strings.Index(content[searchFrom:], body)
+					if idx != -1 {
+						bodyStart = searchFrom + idx
+					}
+				}
 			}
 		}
 	}
@@ -114,7 +120,7 @@ func ToggleTodo(filePath string, bodyLineNumber int) error {
 	}
 
 	line := fileLines[targetIdx]
-	trimmed = strings.TrimSpace(line)
+	trimmed := strings.TrimSpace(line)
 
 	// Determine the leading whitespace
 	leading := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
