@@ -39,6 +39,7 @@ const (
 	modeNewNote
 	modeGenerate
 	modeTagFilter
+	modeTodos
 )
 
 // Sort modes
@@ -89,6 +90,14 @@ type deleteNoteMsg struct {
 
 type tagsLoadedMsg struct {
 	tags []string
+}
+
+type todosLoadedMsg struct {
+	todos []note.TodoItem
+}
+
+type todoToggledMsg struct {
+	err error
 }
 
 func clearStatusAfter(d time.Duration) tea.Cmd {
@@ -154,6 +163,13 @@ type Model struct {
 	// Help overlay
 	showHelp bool
 
+	// Todos view
+	todos         []note.TodoItem
+	filteredTodos []note.TodoItem
+	todoCursor    int
+	todoOffset    int
+	todoFilter    string // "open", "done", "all"
+
 	// Responsive: track which panes are visible
 	chatVisible bool
 }
@@ -200,6 +216,7 @@ func New(cfg config.Config, database *db.DB, worker *ai.Worker) Model {
 		preview:       preview,
 		chatViewport:  chatVp,
 		sortMode:      sortDate,
+		todoFilter:    "open",
 		chatVisible:   true,
 	}
 }
@@ -377,6 +394,23 @@ func loadTags(database *db.DB) tea.Cmd {
 	}
 }
 
+func loadTodos(database *db.DB, filter string) tea.Cmd {
+	return func() tea.Msg {
+		todos, err := database.AllTodos(filter)
+		if err != nil {
+			return errMsg{err}
+		}
+		return todosLoadedMsg{todos: todos}
+	}
+}
+
+func toggleTodo(item note.TodoItem) tea.Cmd {
+	return func() tea.Msg {
+		err := note.ToggleTodo(item.FilePath, item.LineNumber)
+		return todoToggledMsg{err: err}
+	}
+}
+
 func extractFrontmatter(content string) (string, string) {
 	if !strings.HasPrefix(strings.TrimSpace(content), "---") {
 		return "", content
@@ -423,6 +457,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.statusMsg = fmt.Sprintf("Synced %d notes", len(msg.notes))
 		clearCmd := clearStatusAfter(3 * time.Second)
+		// Reload todos if currently in todos view
+		if m.mode == modeTodos {
+			return m, tea.Batch(loadTodos(m.database, m.todoFilter), clearCmd)
+		}
 		// Clamp cursor to valid range
 		if len(m.filteredNotes) == 0 {
 			m.listCursor = 0
@@ -490,6 +528,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tagsLoadedMsg:
 		m.allTags = msg.tags
 		return m, nil
+
+	case todosLoadedMsg:
+		m.todos = msg.todos
+		m.filteredTodos = msg.todos
+		m.todoCursor = 0
+		m.todoOffset = 0
+		// Update preview if we have todos
+		if len(m.filteredTodos) > 0 {
+			return m, m.previewForTodo(m.filteredTodos[0])
+		}
+		m.previewContent = ""
+		m.preview.SetContent("")
+		return m, nil
+
+	case todoToggledMsg:
+		if msg.err != nil {
+			m.statusMsg = fmt.Sprintf("Toggle error: %v", msg.err)
+			return m, clearStatusAfter(3 * time.Second)
+		}
+		return m, loadTodos(m.database, m.todoFilter)
 
 	case editorFinishedMsg:
 		// Re-sync after editing
@@ -591,6 +649,14 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.listOffset = 0
 			if len(m.filteredNotes) > 0 {
 				return m, renderPreview(m.filteredNotes[0])
+			}
+			return m, nil
+		}
+		if m.mode == modeTodos {
+			m.mode = modeNormal
+			m.activePane = paneList
+			if len(m.filteredNotes) > 0 && m.listCursor < len(m.filteredNotes) {
+				return m, renderPreview(m.filteredNotes[m.listCursor])
 			}
 			return m, nil
 		}
@@ -743,6 +809,61 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// Todos mode
+	if m.mode == modeTodos {
+		switch key {
+		case "j", "down":
+			if m.todoCursor < len(m.filteredTodos)-1 {
+				m.todoCursor++
+				m.ensureTodoVisible()
+				return m, m.previewForTodo(m.filteredTodos[m.todoCursor])
+			}
+			return m, nil
+		case "k", "up":
+			if m.todoCursor > 0 {
+				m.todoCursor--
+				m.ensureTodoVisible()
+				return m, m.previewForTodo(m.filteredTodos[m.todoCursor])
+			}
+			return m, nil
+		case "enter":
+			// Jump to source note
+			if len(m.filteredTodos) > 0 && m.todoCursor < len(m.filteredTodos) {
+				todo := m.filteredTodos[m.todoCursor]
+				for i, n := range m.filteredNotes {
+					if n.FilePath == todo.FilePath {
+						m.listCursor = i
+						m.ensureListVisible()
+						break
+					}
+				}
+				m.mode = modeNormal
+				return m, renderPreview(m.findNoteByPath(todo.FilePath))
+			}
+			return m, nil
+		case " ", "x":
+			// Toggle todo
+			if len(m.filteredTodos) > 0 && m.todoCursor < len(m.filteredTodos) {
+				return m, toggleTodo(m.filteredTodos[m.todoCursor])
+			}
+			return m, nil
+		case "f":
+			// Cycle filter
+			switch m.todoFilter {
+			case "open":
+				m.todoFilter = "done"
+			case "done":
+				m.todoFilter = "all"
+			default:
+				m.todoFilter = "open"
+			}
+			return m, loadTodos(m.database, m.todoFilter)
+		case "q", "ctrl+c":
+			return m, tea.Quit
+		}
+		return m, nil
+	}
+
 	// Normal mode
 	switch key {
 	case "q", "ctrl+c":
@@ -892,6 +1013,13 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.syncing = true
 		m.statusMsg = "Syncing..."
 		return m, syncNotes(m.cfg.NotesDir, m.database)
+
+	case "T":
+		m.mode = modeTodos
+		m.activePane = paneList
+		m.todoCursor = 0
+		m.todoOffset = 0
+		return m, loadTodos(m.database, m.todoFilter)
 	}
 
 	return m, nil
@@ -940,6 +1068,33 @@ func (m *Model) listHeight() int {
 		return 1
 	}
 	return h
+}
+
+func (m *Model) ensureTodoVisible() {
+	listHeight := m.listHeight()
+	if m.todoCursor < m.todoOffset {
+		m.todoOffset = m.todoCursor
+	}
+	if m.todoCursor >= m.todoOffset+listHeight {
+		m.todoOffset = m.todoCursor - listHeight + 1
+	}
+}
+
+func (m Model) findNoteByPath(filePath string) *note.Note {
+	for _, n := range m.notes {
+		if n.FilePath == filePath {
+			return n
+		}
+	}
+	return nil
+}
+
+func (m Model) previewForTodo(todo note.TodoItem) tea.Cmd {
+	n := m.findNoteByPath(todo.FilePath)
+	if n != nil {
+		return renderPreview(n)
+	}
+	return nil
 }
 
 func (m *Model) updateLayout() {
@@ -1039,6 +1194,70 @@ func (m Model) renderListPane(width, height int) string {
 	style := paneStyle
 	if m.activePane == paneList {
 		style = activePaneStyle
+	}
+
+	// Todos mode rendering
+	if m.mode == modeTodos {
+		title := titleStyle.Render(fmt.Sprintf("Todos (%s)", m.todoFilter))
+
+		listH := m.listHeight()
+		var items []string
+		for i := m.todoOffset; i < len(m.filteredTodos) && i < m.todoOffset+listH; i++ {
+			t := m.filteredTodos[i]
+
+			// Checkbox
+			var checkbox string
+			if t.Done {
+				checkbox = todoDoneStyle.Render("[x]")
+			} else {
+				checkbox = todoOpenStyle.Render("[ ]")
+			}
+
+			// Todo text
+			todoText := t.Text
+			if todoText == "" {
+				todoText = "(empty)"
+			}
+
+			// Source note name (truncated)
+			source := t.NoteTitle
+			maxTextLen := width - 12 - len(source)
+			if maxTextLen < 8 {
+				maxTextLen = width - 10
+				source = ""
+			}
+			if maxTextLen > 3 && len(todoText) > maxTextLen {
+				todoText = todoText[:maxTextLen-3] + "..."
+			}
+
+			var display string
+			if source != "" {
+				display = checkbox + " " + todoText + " " + todoSourceStyle.Render(source)
+			} else {
+				display = checkbox + " " + todoText
+			}
+
+			if i == m.todoCursor {
+				items = append(items, selectedItemStyle.Render("▸ "+display))
+			} else {
+				items = append(items, normalItemStyle.Render("  "+display))
+			}
+		}
+
+		content := strings.Join(items, "\n")
+		if len(m.filteredTodos) == 0 {
+			content = helpStyle.Render("\n  No todos found.")
+		}
+
+		// Pad to fill height
+		lines := strings.Count(content, "\n") + 1
+		for lines < height-3 {
+			content += "\n"
+			lines++
+		}
+
+		inner := lipgloss.JoinVertical(lipgloss.Left, title, content)
+		return style.Width(width - 2).Height(height - 2).Render(inner)
 	}
 
 	title := titleStyle.Render("Notes")
@@ -1174,6 +1393,24 @@ func (m Model) renderChatPane(width, height int) string {
 func (m Model) renderStatusBar() string {
 	var parts []string
 
+	if m.mode == modeTodos {
+		parts = append(parts, fmt.Sprintf("%d todos (%s)", len(m.filteredTodos), m.todoFilter))
+		if len(m.filteredTodos) > 0 && m.todoCursor < len(m.filteredTodos) {
+			t := m.filteredTodos[m.todoCursor]
+			if t.NoteProject != "" {
+				parts = append(parts, lipgloss.NewStyle().Foreground(colorSecondary).Render("project:"+t.NoteProject))
+			}
+		}
+		parts = append(parts, helpStyle.Render("f:filter  space:toggle  enter:go to note  Esc:back"))
+
+		left := strings.Join(parts, " │ ")
+		gap := m.width - lipgloss.Width(left)
+		if gap < 0 {
+			gap = 0
+		}
+		return statusBarStyle.Render(left + strings.Repeat(" ", gap))
+	}
+
 	// Note count
 	parts = append(parts, fmt.Sprintf("%d notes", len(m.filteredNotes)))
 
@@ -1242,11 +1479,18 @@ func (m Model) helpView() string {
   │    o             Cycle sort order   │
   │    c             Chat with AI       │
   │    s             Sync & re-index    │
+  │    T             Todos view         │
   │                                     │
   │  General                            │
   │    ?             Toggle help        │
   │    Esc           Cancel / back      │
   │    q             Quit               │
+  │                                     │
+  │  Todos View (T)                     │
+  │    space/x       Toggle todo        │
+  │    enter         Jump to note       │
+  │    f             Cycle filter       │
+  │    Esc           Back to notes      │
   │                                     │
   │  List Indicators                    │
   │    *  AI generated note             │

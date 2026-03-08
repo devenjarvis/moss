@@ -77,6 +77,20 @@ func (db *DB) migrate() error {
 		INSERT INTO notes_fts(rowid, title, body, tags, summary)
 		VALUES (new.rowid, new.title, new.body, new.tags, new.summary);
 	END;
+
+	CREATE TABLE IF NOT EXISTS todos (
+		id            INTEGER PRIMARY KEY AUTOINCREMENT,
+		file_path     TEXT NOT NULL REFERENCES notes(file_path) ON DELETE CASCADE,
+		line_number   INTEGER NOT NULL,
+		text          TEXT NOT NULL DEFAULT '',
+		done          INTEGER NOT NULL DEFAULT 0,
+		note_title    TEXT NOT NULL DEFAULT '',
+		note_date     TEXT NOT NULL DEFAULT '',
+		note_tags     TEXT NOT NULL DEFAULT '',
+		note_people   TEXT NOT NULL DEFAULT '',
+		note_project  TEXT NOT NULL DEFAULT '',
+		UNIQUE(file_path, line_number)
+	);
 	`
 	_, err := db.conn.Exec(schema)
 	return err
@@ -284,4 +298,106 @@ func boolToInt(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// UpsertTodos replaces all todos for a given note file path.
+// Pass nil or empty todos to clear all todos for the file.
+func (db *DB) UpsertTodos(filePath string, todos []note.TodoItem) error {
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec("DELETE FROM todos WHERE file_path = ?", filePath); err != nil {
+		return err
+	}
+
+	for _, t := range todos {
+		_, err := tx.Exec(`
+			INSERT INTO todos (file_path, line_number, text, done,
+				note_title, note_date, note_tags, note_people, note_project)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			t.FilePath, t.LineNumber, t.Text, boolToInt(t.Done),
+			t.NoteTitle, t.NoteDate,
+			joinStrings(t.NoteTags), joinStrings(t.NotePeople), t.NoteProject,
+		)
+		if err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
+}
+
+// AllTodos returns todos filtered by status. Filter values: "open", "done", "all".
+func (db *DB) AllTodos(filter string) ([]note.TodoItem, error) {
+	var whereClause string
+	switch filter {
+	case "done":
+		whereClause = "WHERE done = 1"
+	case "all":
+		whereClause = ""
+	default: // "open"
+		whereClause = "WHERE done = 0"
+	}
+
+	query := fmt.Sprintf(`
+		SELECT file_path, line_number, text, done,
+			note_title, note_date, note_tags, note_people, note_project
+		FROM todos %s
+		ORDER BY note_date DESC, file_path, line_number
+	`, whereClause)
+
+	rows, err := db.conn.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return scanTodos(rows)
+}
+
+// TodoProjects returns distinct project names from open todos.
+func (db *DB) TodoProjects() ([]string, error) {
+	rows, err := db.conn.Query(
+		"SELECT DISTINCT note_project FROM todos WHERE note_project != '' AND done = 0 ORDER BY note_project",
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var projects []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, err
+		}
+		projects = append(projects, p)
+	}
+	return projects, rows.Err()
+}
+
+func scanTodos(rows *sql.Rows) ([]note.TodoItem, error) {
+	var todos []note.TodoItem
+	for rows.Next() {
+		var t note.TodoItem
+		var done int
+		var tags, people string
+
+		err := rows.Scan(
+			&t.FilePath, &t.LineNumber, &t.Text, &done,
+			&t.NoteTitle, &t.NoteDate, &tags, &people, &t.NoteProject,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		t.Done = done != 0
+		t.NoteTags = splitStrings(tags)
+		t.NotePeople = splitStrings(people)
+		todos = append(todos, t)
+	}
+	return todos, rows.Err()
 }
