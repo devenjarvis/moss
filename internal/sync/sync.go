@@ -4,6 +4,8 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sync"
+	"time"
 
 	"github.com/devenjarvis/moss/internal/db"
 	"github.com/devenjarvis/moss/internal/note"
@@ -58,6 +60,11 @@ type Watcher struct {
 	notesDir string
 	database *db.DB
 	onChange func()
+
+	// Debouncing
+	mu       sync.Mutex
+	pending  map[string]*time.Timer
+	debounce time.Duration
 }
 
 // NewWatcher creates a file watcher for the notes directory.
@@ -82,6 +89,8 @@ func NewWatcher(notesDir string, database *db.DB, onChange func()) (*Watcher, er
 		notesDir: notesDir,
 		database: database,
 		onChange: onChange,
+		pending:  make(map[string]*time.Timer),
+		debounce: 200 * time.Millisecond,
 	}, nil
 }
 
@@ -94,7 +103,7 @@ func (w *Watcher) Start() {
 				if !ok {
 					return
 				}
-				w.handleEvent(event)
+				w.debounceEvent(event)
 			case err, ok := <-w.watcher.Errors:
 				if !ok {
 					return
@@ -110,33 +119,57 @@ func (w *Watcher) Stop() error {
 	return w.watcher.Close()
 }
 
-func (w *Watcher) handleEvent(event fsnotify.Event) {
+func (w *Watcher) debounceEvent(event fsnotify.Event) {
 	name := event.Name
 	if filepath.Ext(name) != ".md" {
 		return
 	}
 
-	switch {
-	case event.Op&fsnotify.Remove != 0 || event.Op&fsnotify.Rename != 0:
+	// Deletes and renames are handled immediately (no debounce needed)
+	if event.Op&fsnotify.Remove != 0 || event.Op&fsnotify.Rename != 0 {
+		w.mu.Lock()
+		if t, ok := w.pending[name]; ok {
+			t.Stop()
+			delete(w.pending, name)
+		}
+		w.mu.Unlock()
+
 		if err := w.database.DeleteNote(name); err != nil {
 			log.Printf("warning: failed to remove %s from index: %v", name, err)
 		}
 		if w.onChange != nil {
 			w.onChange()
 		}
+		return
+	}
 
-	case event.Op&fsnotify.Write != 0 || event.Op&fsnotify.Create != 0:
-		n, err := note.ParseFile(name)
-		if err != nil {
-			log.Printf("warning: failed to parse %s: %v", name, err)
-			return
+	// Debounce writes and creates
+	if event.Op&fsnotify.Write != 0 || event.Op&fsnotify.Create != 0 {
+		w.mu.Lock()
+		if t, ok := w.pending[name]; ok {
+			t.Stop()
 		}
-		if err := w.database.UpsertNote(n); err != nil {
-			log.Printf("warning: failed to index %s: %v", name, err)
-			return
-		}
-		if w.onChange != nil {
-			w.onChange()
-		}
+		w.pending[name] = time.AfterFunc(w.debounce, func() {
+			w.mu.Lock()
+			delete(w.pending, name)
+			w.mu.Unlock()
+			w.handleWrite(name)
+		})
+		w.mu.Unlock()
+	}
+}
+
+func (w *Watcher) handleWrite(name string) {
+	n, err := note.ParseFile(name)
+	if err != nil {
+		log.Printf("warning: failed to parse %s: %v", name, err)
+		return
+	}
+	if err := w.database.UpsertNote(n); err != nil {
+		log.Printf("warning: failed to index %s: %v", name, err)
+		return
+	}
+	if w.onChange != nil {
+		w.onChange()
 	}
 }
