@@ -553,7 +553,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.syncing = true
 		return m, tea.Batch(
 			syncNotes(m.cfg.NotesDir, m.database),
-			clearStatusAfter(5 * time.Second),
+			clearStatusAfter(5*time.Second),
 		)
 
 	case deleteNoteMsg:
@@ -565,7 +565,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.syncing = true
 		return m, tea.Batch(
 			syncNotes(m.cfg.NotesDir, m.database),
-			clearStatusAfter(3 * time.Second),
+			clearStatusAfter(3*time.Second),
 		)
 
 	case tagsLoadedMsg:
