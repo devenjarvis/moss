@@ -388,8 +388,8 @@ func generateNote(cfg config.Config, database *db.DB, prompt string, notes []*no
 			n.Source = "generated"
 			n.GeneratedPrompt = prompt
 			n.GeneratedFrom = sourcePaths
-			n.WriteFrontmatter()
-			database.UpsertNote(n)
+			_ = n.WriteFrontmatter()
+			_ = database.UpsertNote(n)
 		}
 
 		return generateCompleteMsg{path: path}
@@ -990,9 +990,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, renderPreview(m.filteredNotes[m.listCursor])
 			}
 		case panePreview:
-			m.preview.LineDown(3)
+			m.preview.ScrollDown(3)
 		case paneChat:
-			m.chatViewport.LineDown(3)
+			m.chatViewport.ScrollDown(3)
 		}
 		return m, nil
 
@@ -1005,21 +1005,21 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, renderPreview(m.filteredNotes[m.listCursor])
 			}
 		case panePreview:
-			m.preview.LineUp(3)
+			m.preview.ScrollUp(3)
 		case paneChat:
-			m.chatViewport.LineUp(3)
+			m.chatViewport.ScrollUp(3)
 		}
 		return m, nil
 
 	case "ctrl+d":
 		if m.activePane == panePreview {
-			m.preview.HalfViewDown()
+			m.preview.HalfPageDown()
 		}
 		return m, nil
 
 	case "ctrl+u":
 		if m.activePane == panePreview {
-			m.preview.HalfViewUp()
+			m.preview.HalfPageUp()
 		}
 		return m, nil
 
@@ -1359,13 +1359,14 @@ func (m Model) renderListPane(width, height int) string {
 
 	// Search bar or other input modes that show in list pane
 	var inputBar string
-	if m.mode == modeSearch {
+	switch m.mode {
+	case modeSearch:
 		inputBar = m.searchInput.View()
-	} else if m.mode == modeNewNote {
+	case modeNewNote:
 		inputBar = lipgloss.NewStyle().Foreground(colorAccent).Render("Title: ") + m.newNoteInput.View()
-	} else if m.mode == modeGenerate {
+	case modeGenerate:
 		inputBar = lipgloss.NewStyle().Foreground(colorWarning).Render("Gen: ") + m.generateInput.View()
-	} else if m.mode == modeTagFilter {
+	case modeTagFilter:
 		label := "Tag: "
 		if len(m.allTags) > 0 {
 			label = fmt.Sprintf("Tag (%s): ", strings.Join(m.allTags, ", "))
@@ -1376,7 +1377,7 @@ func (m Model) renderListPane(width, height int) string {
 			}
 		}
 		inputBar = lipgloss.NewStyle().Foreground(colorSecondary).Render(label) + m.tagInput.View()
-	} else if m.mode == modeConfirm {
+	case modeConfirm:
 		inputBar = lipgloss.NewStyle().Foreground(colorWarning).Bold(true).Render(m.confirmMsg)
 	}
 

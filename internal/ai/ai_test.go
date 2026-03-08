@@ -2,7 +2,6 @@ package ai
 
 import (
 	"context"
-	"fmt"
 	"testing"
 	"time"
 
@@ -205,7 +204,6 @@ func TestSuggestTagsParsing(t *testing.T) {
 
 // Helper functions that mirror the parsing logic in SuggestTags
 func trimBrackets(s string) string {
-	s = fmt.Sprintf("%s", s) // ensure string
 	if len(s) >= 2 && s[0] == '[' && s[len(s)-1] == ']' {
 		return s[1 : len(s)-1]
 	}
@@ -224,11 +222,7 @@ func splitAndTrim(s string) []string {
 }
 
 func splitComma(s string) []string {
-	var parts []string
-	for _, p := range splitByChar(s, ',') {
-		parts = append(parts, p)
-	}
-	return parts
+	return append([]string(nil), splitByChar(s, ',')...)
 }
 
 func splitByChar(s string, c byte) []string {

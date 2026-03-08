@@ -27,9 +27,9 @@ func TestDefaultConfig(t *testing.T) {
 func TestGetEditor(t *testing.T) {
 	t.Run("EDITOR env set", func(t *testing.T) {
 		original := os.Getenv("EDITOR")
-		t.Cleanup(func() { os.Setenv("EDITOR", original) })
+		t.Cleanup(func() { _ = os.Setenv("EDITOR", original) })
 
-		os.Setenv("EDITOR", "nvim")
+		t.Setenv("EDITOR", "nvim")
 		if got := getEditor(); got != "nvim" {
 			t.Errorf("getEditor() = %q, want %q", got, "nvim")
 		}
@@ -37,9 +37,9 @@ func TestGetEditor(t *testing.T) {
 
 	t.Run("EDITOR env not set", func(t *testing.T) {
 		original := os.Getenv("EDITOR")
-		t.Cleanup(func() { os.Setenv("EDITOR", original) })
+		t.Cleanup(func() { _ = os.Setenv("EDITOR", original) })
 
-		os.Unsetenv("EDITOR")
+		t.Setenv("EDITOR", "")
 		if got := getEditor(); got != "vi" {
 			t.Errorf("getEditor() = %q, want %q", got, "vi")
 		}
@@ -66,11 +66,11 @@ func TestLoad_NoConfigFile(t *testing.T) {
 func TestLoad_WithConfigFile(t *testing.T) {
 	// Save original HOME and restore after test
 	originalHome := os.Getenv("HOME")
-	t.Cleanup(func() { os.Setenv("HOME", originalHome) })
+	t.Cleanup(func() { _ = os.Setenv("HOME", originalHome) })
 
 	// Create temp home directory with config
 	tmpHome := t.TempDir()
-	os.Setenv("HOME", tmpHome)
+	t.Setenv("HOME", tmpHome)
 
 	configDir := filepath.Join(tmpHome, "moss")
 	if err := os.MkdirAll(configDir, 0755); err != nil {
@@ -102,10 +102,10 @@ editor: emacs
 
 func TestLoad_PartialConfig(t *testing.T) {
 	originalHome := os.Getenv("HOME")
-	t.Cleanup(func() { os.Setenv("HOME", originalHome) })
+	t.Cleanup(func() { _ = os.Setenv("HOME", originalHome) })
 
 	tmpHome := t.TempDir()
-	os.Setenv("HOME", tmpHome)
+	t.Setenv("HOME", tmpHome)
 
 	configDir := filepath.Join(tmpHome, "moss")
 	if err := os.MkdirAll(configDir, 0755); err != nil {

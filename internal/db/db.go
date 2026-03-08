@@ -24,7 +24,7 @@ func Open(path string) (*DB, error) {
 
 	db := &DB{conn: conn}
 	if err := db.migrate(); err != nil {
-		conn.Close()
+		conn.Close() //nolint:errcheck
 		return nil, err
 	}
 
@@ -149,7 +149,7 @@ func (db *DB) AllNotes() ([]*note.Note, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer rows.Close() //nolint:errcheck
 
 	return scanNotes(rows)
 }
@@ -184,7 +184,7 @@ func (db *DB) Search(query string) ([]*note.Note, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer rows.Close() //nolint:errcheck
 
 	return scanNotes(rows)
 }
@@ -204,7 +204,7 @@ func (db *DB) SearchWithTag(query, tag string) ([]*note.Note, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer rows.Close() //nolint:errcheck
 
 	return scanNotes(rows)
 }
@@ -400,7 +400,7 @@ func (db *DB) SearchAdvanced(pq ParsedQuery, tag string) ([]*note.Note, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer rows.Close() //nolint:errcheck
 
 	return scanNotes(rows)
 }
@@ -417,7 +417,7 @@ func (db *DB) FilterByTag(tag string) ([]*note.Note, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer rows.Close() //nolint:errcheck
 
 	return scanNotes(rows)
 }
@@ -428,7 +428,7 @@ func (db *DB) AllTags() ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer rows.Close() //nolint:errcheck
 
 	seen := make(map[string]struct{})
 	for rows.Next() {
@@ -478,7 +478,7 @@ func (db *DB) AllNotesSorted(sortBy string) ([]*note.Note, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer rows.Close() //nolint:errcheck
 
 	return scanNotes(rows)
 }
@@ -523,7 +523,7 @@ func (db *DB) UpsertTodos(filePath string, todos []note.TodoItem) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer tx.Rollback() //nolint:errcheck
 
 	if _, err := tx.Exec("DELETE FROM todos WHERE file_path = ?", filePath); err != nil {
 		return err
@@ -569,7 +569,7 @@ func (db *DB) AllTodos(filter string) ([]note.TodoItem, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer rows.Close() //nolint:errcheck
 
 	return scanTodos(rows)
 }
@@ -582,7 +582,7 @@ func (db *DB) TodoProjects() ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer rows.Close() //nolint:errcheck
 
 	var projects []string
 	for rows.Next() {
