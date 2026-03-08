@@ -41,6 +41,12 @@ cd moss
 go build -o moss ./cmd/moss/
 ```
 
+### Updating
+
+- **Homebrew:** `brew upgrade moss`
+- **Shell script:** re-run the install script above
+- **Go:** re-run `go install github.com/devenjarvis/moss/cmd/moss@latest`
+
 ## Usage
 
 ```
@@ -50,6 +56,8 @@ moss ask "question"     Query across your notes using AI
 moss sync               Scan for new/changed files and rebuild index
 moss generate "prompt"  Generate a new note from a prompt
 moss version            Show version information
+moss uninstall [--all]  Remove moss (preserves notes by default)
+moss help               Show usage information
 ```
 
 ## TUI Keybindings
@@ -58,20 +66,49 @@ moss version            Show version information
 |-----|--------|
 | `j/k`, `↑/↓` | Move up/down |
 | `h/l`, `←/→` | Switch panes |
-| `Tab` | Next pane |
+| `Tab` / `Shift+Tab` | Next/previous pane |
 | `Enter` | Open note in editor |
 | `/` | Search notes |
 | `c` | Chat with AI |
 | `n` | New note |
+| `d` | Delete note |
+| `g` | Generate note from AI prompt |
+| `t` | Filter by tag |
+| `T` | View TODOs |
+| `o` | Cycle sort order (date/title/modified/words) |
 | `s` | Sync & re-index |
 | `Ctrl+d/u` | Scroll half page |
 | `?` | Help overlay |
+| `Esc` | Cancel / go back |
 | `q` | Quit |
+
+## Search Syntax
+
+Press `/` to search. Moss supports full-text search with field-specific prefixes:
+
+- Type freely for general full-text search across all notes
+- `title:keyword` — search by title
+- `tag:go` or `tags:go` — filter by tag
+- `project:moss` — filter by project
+- `people:name` — filter by people
+- `status:active` — filter by status
+- Use quotes for values with spaces: `project:"my project"`
+
+## TODO Management
+
+Press `T` to open the TODO view, which collects all `- [ ]` and `- [x]` items from your notes.
+
+| Key | Action |
+|-----|--------|
+| `Space` / `x` | Toggle checkbox |
+| `Enter` | Jump to source note |
+| `f` | Cycle filter (open/done/all) |
+| `Esc` | Return to notes |
 
 ## Layout
 
 Three-pane TUI:
-- **Left** — Note list (filterable via `/` search)
+- **Left** — Note list (filterable via `/` search). AI-generated notes are marked with `*`, notes with TODOs with `+`.
 - **Center** — Markdown preview (rendered with [Glamour](https://github.com/charmbracelet/glamour))
 - **Right** — AI chat pane
 
@@ -135,7 +172,11 @@ moss uninstall        # Removes binary, database, config (preserves notes)
 moss uninstall --all  # Removes everything including notes
 ```
 
-Or if installed via Homebrew: `brew uninstall moss`
+If installed via Homebrew:
+
+```bash
+brew uninstall moss
+```
 
 ## Dependencies
 
