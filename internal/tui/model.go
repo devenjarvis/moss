@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -60,6 +61,14 @@ type editorFinishedMsg struct {
 
 type errMsg struct {
 	err error
+}
+
+type clearStatusMsg struct{}
+
+func clearStatusAfter(d time.Duration) tea.Cmd {
+	return tea.Tick(d, func(_ time.Time) tea.Msg {
+		return clearStatusMsg{}
+	})
 }
 
 // Model is the main TUI model.
@@ -237,15 +246,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.syncing = false
 		if msg.err != nil {
 			m.statusMsg = fmt.Sprintf("Sync error: %v", msg.err)
-			return m, nil
+			return m, clearStatusAfter(5 * time.Second)
 		}
 		m.notes = msg.notes
 		m.filteredNotes = msg.notes
 		m.statusMsg = fmt.Sprintf("Synced %d notes", len(msg.notes))
-		if len(m.notes) > 0 && m.listCursor < len(m.notes) {
-			return m, renderPreview(m.notes[m.listCursor])
+		clearCmd := clearStatusAfter(3 * time.Second)
+		// Clamp cursor to valid range
+		if len(m.filteredNotes) == 0 {
+			m.listCursor = 0
+			m.listOffset = 0
+			m.previewContent = ""
+			m.preview.SetContent("")
+			return m, clearCmd
 		}
-		return m, nil
+		if m.listCursor >= len(m.filteredNotes) {
+			m.listCursor = len(m.filteredNotes) - 1
+		}
+		if m.listOffset > m.listCursor {
+			m.listOffset = m.listCursor
+		}
+		return m, tea.Batch(renderPreview(m.filteredNotes[m.listCursor]), clearCmd)
 
 	case notePreviewMsg:
 		m.previewContent = msg.content
@@ -273,9 +294,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Re-sync after editing
 		return m, syncNotes(m.cfg.NotesDir, m.database)
 
+	case clearStatusMsg:
+		m.statusMsg = ""
+		return m, nil
+
 	case errMsg:
 		m.statusMsg = fmt.Sprintf("Error: %v", msg.err)
-		return m, nil
+		return m, clearStatusAfter(5 * time.Second)
 
 	case tea.KeyMsg:
 		return m.handleKey(msg)
@@ -304,6 +329,13 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.mode = modeNormal
 			m.searchInput.Blur()
 			m.filteredNotes = m.notes
+			if m.listCursor >= len(m.filteredNotes) {
+				m.listCursor = max(0, len(m.filteredNotes)-1)
+			}
+			m.listOffset = 0
+			if len(m.filteredNotes) > 0 {
+				return m, renderPreview(m.filteredNotes[m.listCursor])
+			}
 			return m, nil
 		}
 		if m.mode == modeChat {
@@ -345,15 +377,23 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					m.filteredNotes = m.notes
 				} else {
 					m.filteredNotes = results
-					m.statusMsg = fmt.Sprintf("Found %d notes", len(results))
+					if len(results) == 0 {
+						m.statusMsg = "No notes found"
+					} else {
+						m.statusMsg = fmt.Sprintf("Found %d notes", len(results))
+					}
 				}
 			}
 			m.listCursor = 0
 			m.listOffset = 0
+			clearCmd := clearStatusAfter(3 * time.Second)
 			if len(m.filteredNotes) > 0 {
-				return m, renderPreview(m.filteredNotes[0])
+				return m, tea.Batch(renderPreview(m.filteredNotes[0]), clearCmd)
 			}
-			return m, nil
+			// Clear preview when no results
+			m.previewContent = ""
+			m.preview.SetContent("")
+			return m, clearCmd
 		default:
 			var cmd tea.Cmd
 			m.searchInput, cmd = m.searchInput.Update(msg)
@@ -376,7 +416,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			})
 			m.aiPending++
 			m.updateChatViewport()
-			return m, askAI(context.Background(), question, m.notes)
+			return m, askAI(context.Background(), question, m.filteredNotes)
 		default:
 			var cmd tea.Cmd
 			m.chatInput, cmd = m.chatInput.Update(msg)
@@ -448,7 +488,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "enter":
-		if m.activePane == paneList && len(m.filteredNotes) > 0 {
+		if m.activePane == paneList && len(m.filteredNotes) > 0 && m.listCursor < len(m.filteredNotes) {
 			n := m.filteredNotes[m.listCursor]
 			return m, openEditor(m.cfg.Editor, n.FilePath)
 		}
@@ -506,7 +546,11 @@ func (m *Model) ensureListVisible() {
 
 func (m *Model) listHeight() int {
 	// Account for borders, title, status bar
-	return m.height - 6
+	h := m.height - 6
+	if h < 1 {
+		return 1
+	}
+	return h
 }
 
 func (m *Model) updateLayout() {
@@ -610,8 +654,10 @@ func (m Model) renderListPane(width, height int) string {
 	for i := m.listOffset; i < len(m.filteredNotes) && i < m.listOffset+listH; i++ {
 		n := m.filteredNotes[i]
 		display := n.Title
-		if len(display) > width-6 {
+		if width > 9 && len(display) > width-6 {
 			display = display[:width-9] + "..."
+		} else if width <= 9 && len(display) > 3 {
+			display = display[:3] + "..."
 		}
 
 		if i == m.listCursor {
