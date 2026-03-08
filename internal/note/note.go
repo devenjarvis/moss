@@ -25,11 +25,11 @@ type Note struct {
 	GeneratedPrompt string   `yaml:"generated_prompt,omitempty"`
 
 	// Computed fields (not in frontmatter)
-	FilePath     string `yaml:"-"`
-	Body         string `yaml:"-"`
+	FilePath     string    `yaml:"-"`
+	Body         string    `yaml:"-"`
 	LastModified time.Time `yaml:"-"`
-	WordCount    int    `yaml:"-"`
-	HasTodos     bool   `yaml:"-"`
+	WordCount    int       `yaml:"-"`
+	HasTodos     bool      `yaml:"-"`
 }
 
 // ParseFile reads a markdown file and parses its frontmatter and body.

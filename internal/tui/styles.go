@@ -7,8 +7,6 @@ var (
 	colorPrimary   = lipgloss.Color("#7C3AED") // purple
 	colorSecondary = lipgloss.Color("#06B6D4") // cyan
 	colorMuted     = lipgloss.Color("#6B7280") // gray
-	colorBg        = lipgloss.Color("#1E1E2E") // dark bg
-	colorBgAlt     = lipgloss.Color("#313244") // alt bg
 	colorFg        = lipgloss.Color("#CDD6F4") // light text
 	colorAccent    = lipgloss.Color("#A6E3A1") // green
 	colorWarning   = lipgloss.Color("#F9E2AF") // yellow
@@ -55,16 +53,6 @@ var (
 	chatInputStyle = lipgloss.NewStyle().
 			BorderStyle(lipgloss.RoundedBorder()).
 			BorderForeground(colorSecondary).
-			Padding(0, 1)
-
-	chatResponseStyle = lipgloss.NewStyle().
-				Foreground(colorFg).
-				Padding(0, 1)
-
-	// Tags
-	tagStyle = lipgloss.NewStyle().
-			Foreground(colorSecondary).
-			Background(colorBgAlt).
 			Padding(0, 1)
 
 	// Todos

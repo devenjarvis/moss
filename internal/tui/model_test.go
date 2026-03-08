@@ -22,7 +22,7 @@ func newTestModel(t *testing.T) Model {
 	if err != nil {
 		t.Fatalf("failed to open test db: %v", err)
 	}
-	t.Cleanup(func() { database.Close() })
+	t.Cleanup(func() { _ = database.Close() })
 
 	cfg := config.Config{
 		NotesDir: t.TempDir(),

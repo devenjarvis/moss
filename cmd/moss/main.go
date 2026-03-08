@@ -81,10 +81,10 @@ func mustOpenDB(cfg config.Config) *db.DB {
 func runTUI() {
 	cfg := mustLoadConfig()
 	database := mustOpenDB(cfg)
-	defer database.Close()
+	defer database.Close() //nolint:errcheck
 
 	// Initial sync
-	msync.SyncNotes(cfg.NotesDir, database)
+	_, _ = msync.SyncNotes(cfg.NotesDir, database)
 
 	// Background AI worker
 	worker := ai.NewWorker(100)
@@ -101,7 +101,7 @@ func runTUI() {
 	watcher, err := msync.NewWatcher(cfg.NotesDir, database, nil)
 	if err == nil {
 		watcher.Start()
-		defer watcher.Stop()
+		defer watcher.Stop() //nolint:errcheck
 		model.SetWatcher(watcher)
 	}
 
@@ -199,7 +199,7 @@ func queueFrontmatterTasks(cfg config.Config, database *db.DB, worker *ai.Worker
 			if err := n.WriteFrontmatter(); err != nil {
 				continue
 			}
-			database.UpsertNote(n)
+			_ = database.UpsertNote(n)
 		}
 	}()
 }
@@ -232,11 +232,11 @@ func cmdNew(args []string) {
 
 	// Index the new note
 	database := mustOpenDB(cfg)
-	defer database.Close()
+	defer database.Close() //nolint:errcheck
 
 	n, err := note.ParseFile(path)
 	if err == nil {
-		database.UpsertNote(n)
+		_ = database.UpsertNote(n)
 	}
 }
 
@@ -248,7 +248,7 @@ func cmdAsk(args []string) {
 
 	cfg := mustLoadConfig()
 	database := mustOpenDB(cfg)
-	defer database.Close()
+	defer database.Close() //nolint:errcheck
 
 	question := strings.Join(args, " ")
 
@@ -280,7 +280,7 @@ func cmdAsk(args []string) {
 func cmdSync() {
 	cfg := mustLoadConfig()
 	database := mustOpenDB(cfg)
-	defer database.Close()
+	defer database.Close() //nolint:errcheck
 
 	notes, err := msync.SyncNotes(cfg.NotesDir, database)
 	if err != nil {
@@ -299,7 +299,7 @@ func cmdGenerate(args []string) {
 
 	cfg := mustLoadConfig()
 	database := mustOpenDB(cfg)
-	defer database.Close()
+	defer database.Close() //nolint:errcheck
 
 	prompt := strings.Join(args, " ")
 
@@ -360,8 +360,8 @@ func cmdGenerate(args []string) {
 		n.Source = "generated"
 		n.GeneratedPrompt = prompt
 		n.GeneratedFrom = sourcePaths
-		n.WriteFrontmatter()
-		database.UpsertNote(n)
+		_ = n.WriteFrontmatter()
+		_ = database.UpsertNote(n)
 	}
 
 	fmt.Printf("Generated: %s\n", path)

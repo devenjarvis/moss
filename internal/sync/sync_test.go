@@ -16,7 +16,7 @@ func newTestDB(t *testing.T) *db.DB {
 	if err != nil {
 		t.Fatalf("failed to open test db: %v", err)
 	}
-	t.Cleanup(func() { database.Close() })
+	t.Cleanup(func() { _ = database.Close() })
 	return database
 }
 
@@ -222,7 +222,7 @@ func TestWatcher_NonexistentDir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer w.Stop()
+	defer func() { _ = w.Stop() }()
 
 	// Verify directory was created
 	info, err := os.Stat(dir)

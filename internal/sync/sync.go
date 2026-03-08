@@ -31,7 +31,7 @@ func SyncNotes(notesDir string, database *db.DB) ([]*note.Note, error) {
 	if err == nil {
 		for _, n := range existing {
 			if _, ok := onDisk[n.FilePath]; !ok {
-				database.DeleteNote(n.FilePath)
+				_ = database.DeleteNote(n.FilePath)
 			}
 		}
 	}
@@ -80,12 +80,12 @@ func NewWatcher(notesDir string, database *db.DB, onChange func()) (*Watcher, er
 	}
 
 	if err := os.MkdirAll(notesDir, 0755); err != nil {
-		w.Close()
+		_ = w.Close()
 		return nil, err
 	}
 
 	if err := w.Add(notesDir); err != nil {
-		w.Close()
+		_ = w.Close()
 		return nil, err
 	}
 

@@ -9,10 +9,10 @@ import (
 
 func TestSplitFrontmatter(t *testing.T) {
 	tests := []struct {
-		name       string
-		content    string
-		wantFM     string
-		wantBody   string
+		name     string
+		content  string
+		wantFM   string
+		wantBody string
 	}{
 		{
 			name:     "valid frontmatter",

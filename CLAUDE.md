@@ -3,7 +3,10 @@
 ## Build & Test
 
 ```bash
-# Build
+# Build (using mage)
+mage build
+
+# Or directly with go
 go build -o moss ./cmd/moss/
 
 # Run
@@ -11,14 +14,15 @@ go build -o moss ./cmd/moss/
 ./moss sync         # re-index notes
 ./moss help         # usage
 
+# Test
+mage test           # or: go test ./...
+
+# Vet + Test
+mage check
+
 # Tidy modules
-go mod tidy
-
-# Vet
-go vet ./...
+mage tidy           # or: go mod tidy
 ```
-
-There are no tests yet. When adding tests, use `go test ./...`.
 
 ## Architecture
 
