@@ -41,7 +41,7 @@ func RunClaude(ctx context.Context, model, prompt, stdin string) (string, error)
 	}
 
 	cmd := exec.CommandContext(ctx, "claude", args...)
-	cmd.Stdin = strings.NewReader(stdin) // always set stdin to prevent inheriting terminal
+	cmd.Stdin = strings.NewReader(stdin)                 // always set stdin to prevent inheriting terminal
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // detach from controlling terminal
 
 	var stdout, stderr bytes.Buffer
