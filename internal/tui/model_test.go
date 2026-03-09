@@ -36,6 +36,8 @@ func newTestModel(t *testing.T) Model {
 	m.width = 120
 	m.height = 40
 	m.updateLayout()
+	// Clear startup input suppression for tests
+	m.suppressInputUntil = time.Time{}
 	return m
 }
 
@@ -2089,5 +2091,117 @@ func TestEditMode_ResizeUpdatesEditor(t *testing.T) {
 
 	if m.mode != modeEdit {
 		t.Error("should still be in edit mode after resize")
+	}
+}
+
+// --- Input Suppression Tests ---
+// These test the fix for misparsed terminal query responses (OSC/CSI)
+// being dispatched as individual character key events.
+
+func TestInputSuppression_StartupDropsKeys(t *testing.T) {
+	m := newTestModelWithNotes(t)
+	// Re-enable suppression (newTestModel clears it)
+	m.suppressInputUntil = time.Now().Add(500 * time.Millisecond)
+
+	// Simulate escape sequence fragment characters that arrive at startup
+	// (e.g. from OSC 11 background color response: ]11;rgb:...)
+	for _, ch := range []string{"]", "1", "1", ";", "r", "g", "b"} {
+		model, _ := m.Update(keyMsg(ch))
+		m = model.(Model)
+	}
+
+	// 'g' should NOT have triggered generate mode
+	if m.mode != modeNormal {
+		t.Errorf("mode = %d, want %d (modeNormal); suppressed keys should not trigger mode changes", m.mode, modeNormal)
+	}
+}
+
+func TestInputSuppression_AfterWindowKeysWork(t *testing.T) {
+	m := newTestModelWithNotes(t)
+	// Set suppression in the past so it's already expired
+	m.suppressInputUntil = time.Now().Add(-1 * time.Second)
+
+	// Keys should work normally after suppression expires
+	model, _ := m.Update(keyMsg("j"))
+	m = model.(Model)
+
+	if m.listCursor != 1 {
+		t.Errorf("listCursor = %d, want 1; keys should work after suppression expires", m.listCursor)
+	}
+}
+
+func TestInputSuppression_EditModeExitSetsSuppression(t *testing.T) {
+	m := newTestModelWithRealNotes(t)
+
+	// Enter edit mode
+	model, _ := m.Update(specialKeyMsg(tea.KeyEnter))
+	m = model.(Model)
+	if m.mode != modeEdit {
+		t.Fatalf("expected modeEdit, got %d", m.mode)
+	}
+
+	// Exit edit mode
+	model, _ = m.Update(specialKeyMsg(tea.KeyEscape))
+	m = model.(Model)
+
+	if m.mode != modeNormal {
+		t.Fatalf("expected modeNormal after Esc, got %d", m.mode)
+	}
+
+	// Suppression should be set after exiting editor
+	if m.suppressInputUntil.IsZero() || m.suppressInputUntil.Before(time.Now()) {
+		t.Error("suppressInputUntil should be set to a future time after exiting editor")
+	}
+
+	// Simulate CSI cursor position report fragment: [38;60R
+	for _, ch := range []string{"[", "3", "8", ";", "6", "0"} {
+		model, _ = m.Update(keyMsg(ch))
+		m = model.(Model)
+	}
+
+	// None of these should have changed mode or state
+	if m.mode != modeNormal {
+		t.Errorf("mode = %d, want %d; suppressed post-editor keys should be dropped", m.mode, modeNormal)
+	}
+}
+
+func TestInputSuppression_NewModelHasSuppression(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("failed to open test db: %v", err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+
+	cfg := config.Config{
+		NotesDir: t.TempDir(),
+		DBPath:   dbPath,
+	}
+	worker := ai.NewWorker(10)
+
+	// New() should set startup suppression
+	m := New(cfg, database, worker)
+	if m.suppressInputUntil.IsZero() {
+		t.Error("New() should set suppressInputUntil for startup protection")
+	}
+	if m.suppressInputUntil.Before(time.Now()) {
+		t.Error("suppressInputUntil should be in the future immediately after New()")
+	}
+}
+
+func TestInputSuppression_ZeroTimeDisablesSuppression(t *testing.T) {
+	m := newTestModelWithNotes(t)
+	// suppressInputUntil is zeroed by newTestModel
+
+	if !m.suppressInputUntil.IsZero() {
+		t.Fatal("test setup: suppressInputUntil should be zero")
+	}
+
+	// Keys should work normally when suppression is zero
+	model, _ := m.Update(keyMsg("g"))
+	m = model.(Model)
+
+	if m.mode != modeGenerate {
+		t.Errorf("mode = %d, want %d; zero suppression should not block keys", m.mode, modeGenerate)
 	}
 }

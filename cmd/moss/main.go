@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -112,6 +114,10 @@ func runTUI() {
 		defer watcher.Stop() //nolint:errcheck
 		model.SetWatcher(watcher)
 	}
+
+	// Silence the default logger during TUI mode — log.Printf writes to
+	// stderr which corrupts the alt-screen display in Bubble Tea v2.
+	log.SetOutput(io.Discard)
 
 	// Run the TUI
 	p := tea.NewProgram(model)

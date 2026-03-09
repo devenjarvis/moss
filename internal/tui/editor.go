@@ -148,6 +148,13 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd, bool) {
 			}
 		}
 
+		// Filter unhandled super/hyper key events — don't pass to widgets
+		// where they could insert garbage text on terminals with partial
+		// Kitty keyboard protocol support.
+		if msg.Mod.Contains(tea.ModSuper) || msg.Mod.Contains(tea.ModHyper) {
+			return e, nil, false
+		}
+
 		// Delegate to focused widget
 		var cmd tea.Cmd
 		switch e.focus {
