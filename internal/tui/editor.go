@@ -121,6 +121,38 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd, bool) {
 				e.setFocus(editorFocusBody)
 				return e, nil, false
 			}
+
+		case "super+b", "super+i", "super+1", "super+2", "super+3":
+			if e.focus == editorFocusBody {
+				switch key {
+				case "super+b":
+					e.body = toggleInlineMarker(e.body, "**")
+				case "super+i":
+					e.body = toggleInlineMarker(e.body, "*")
+				case "super+1":
+					e.body = toggleHeading(e.body, 1)
+				case "super+2":
+					e.body = toggleHeading(e.body, 2)
+				case "super+3":
+					e.body = toggleHeading(e.body, 3)
+				}
+				e.dirty = true
+				e.saved = false
+				e.lastEdit = time.Now()
+				e.tickID++
+				tickID := e.tickID
+				tickCmd := tea.Tick(2*time.Second, func(_ time.Time) tea.Msg {
+					return editorAutoSaveTickMsg{id: tickID}
+				})
+				return e, tickCmd, false
+			}
+		}
+
+		// Filter unhandled super/hyper key events — don't pass to widgets
+		// where they could insert garbage text on terminals with partial
+		// Kitty keyboard protocol support.
+		if msg.Mod.Contains(tea.ModSuper) || msg.Mod.Contains(tea.ModHyper) {
+			return e, nil, false
 		}
 
 		// Delegate to focused widget
@@ -204,7 +236,7 @@ func (e Editor) View(width, height int) string {
 	} else if e.saved {
 		status = editorSavedStyle.Render("✓ saved")
 	} else {
-		status = helpStyle.Render("Tab: next field  Esc: save & close  Ctrl+S: save")
+		status = helpStyle.Render("Tab: next field  Esc: save & close  Ctrl+S: save  ⌘B/I: bold/italic  ⌘1-3: heading")
 	}
 
 	// Body takes remaining space
@@ -276,6 +308,89 @@ func (e *Editor) setFocus(focus int) {
 	case editorFocusBody:
 		e.body.Focus()
 	}
+}
+
+// repositionCursor moves the cursor to the given row and column after a SetValue call
+// (which resets cursor to the beginning).
+func repositionCursor(ta *textarea.Model, row, col int) {
+	ta.MoveToBegin()
+	for i := 0; i < row; i++ {
+		ta.CursorDown()
+	}
+	ta.SetCursorColumn(col)
+}
+
+// toggleInlineMarker inserts a markdown marker pair (e.g. ** for bold, * for italic)
+// at the cursor, or removes it if the cursor is between matching markers.
+func toggleInlineMarker(ta textarea.Model, marker string) textarea.Model {
+	line := ta.Line()
+	col := ta.Column()
+	value := ta.Value()
+	lines := strings.Split(value, "\n")
+	currentLine := lines[line]
+	ml := len(marker)
+
+	// Check if cursor is between matching marker pairs (e.g. **|**)
+	if col >= ml && col+ml <= len(currentLine) &&
+		currentLine[col-ml:col] == marker && currentLine[col:col+ml] == marker {
+		// For single-char marker (*), ensure we're not inside bold markers (**)
+		if ml == 1 && col >= 2 && col+2 <= len(currentLine) &&
+			currentLine[col-2:col] == "**" && currentLine[col:col+2] == "**" {
+			// Inside bold markers, not italic — insert italic instead
+			ta.InsertString(marker + marker)
+			ta.SetCursorColumn(col + ml)
+			return ta
+		}
+		// Remove markers (toggle off)
+		lines[line] = currentLine[:col-ml] + currentLine[col+ml:]
+		ta.SetValue(strings.Join(lines, "\n"))
+		repositionCursor(&ta, line, col-ml)
+		return ta
+	}
+
+	// Insert markers (toggle on)
+	ta.InsertString(marker + marker)
+	ta.SetCursorColumn(col + ml)
+	return ta
+}
+
+// toggleHeading toggles a heading prefix (# , ## , ### ) on the current line.
+func toggleHeading(ta textarea.Model, level int) textarea.Model {
+	line := ta.Line()
+	col := ta.Column()
+	value := ta.Value()
+	lines := strings.Split(value, "\n")
+	currentLine := lines[line]
+	prefix := strings.Repeat("#", level) + " "
+
+	// Strip any existing heading prefix (up to 6 levels)
+	stripped := currentLine
+	oldPrefixLen := 0
+	for i := 6; i >= 1; i-- {
+		p := strings.Repeat("#", i) + " "
+		if strings.HasPrefix(currentLine, p) {
+			stripped = strings.TrimPrefix(currentLine, p)
+			oldPrefixLen = len(p)
+			break
+		}
+	}
+
+	// Toggle: if same level, remove; otherwise set new level
+	var newCol int
+	if strings.HasPrefix(currentLine, prefix) {
+		lines[line] = stripped
+		newCol = col - oldPrefixLen
+	} else {
+		lines[line] = prefix + stripped
+		newCol = col - oldPrefixLen + len(prefix)
+	}
+	if newCol < 0 {
+		newCol = 0
+	}
+
+	ta.SetValue(strings.Join(lines, "\n"))
+	repositionCursor(&ta, line, newCol)
+	return ta
 }
 
 func (e *Editor) saveNow() tea.Cmd {

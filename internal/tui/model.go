@@ -192,6 +192,11 @@ type Model struct {
 
 	// Update notification
 	updateVersion string
+
+	// Input suppression: ignore key events until this time.
+	// Prevents misparsed terminal query responses (OSC, CSI) from being
+	// dispatched as individual key events at startup and after mode transitions.
+	suppressInputUntil time.Time
 }
 
 type chatMessage struct {
@@ -238,6 +243,10 @@ func New(cfg config.Config, database *db.DB, worker *ai.Worker) Model {
 		sortMode:      sortDate,
 		todoFilter:    "open",
 		chatVisible:   true,
+		// Suppress key input briefly at startup to absorb terminal query
+		// responses (OSC color, CSI cursor position) that Bubble Tea's input
+		// parser may dispatch as individual key events.
+		suppressInputUntil: time.Now().Add(500 * time.Millisecond),
 	}
 }
 
@@ -311,7 +320,7 @@ func renderPreview(n *note.Note) tea.Cmd {
 		sb.WriteString(n.Body)
 
 		renderer, err := glamour.NewTermRenderer(
-			glamour.WithAutoStyle(),
+			glamour.WithStandardStyle("dark"),
 			glamour.WithWordWrap(80),
 		)
 		if err != nil {
@@ -694,6 +703,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyPressMsg:
+		// Drop key events during suppression window. Terminal query responses
+		// (OSC background color, CSI cursor position) can be misparsed by
+		// Bubble Tea's input parser as individual character key events.
+		if !m.suppressInputUntil.IsZero() && time.Now().Before(m.suppressInputUntil) {
+			return m, nil
+		}
 		return m.handleKey(msg)
 	}
 
@@ -756,9 +771,21 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.mode = modeNormal
 			m.editingPath = ""
 			m.syncing = true
+			// Suppress input briefly after closing editor — the renderer
+			// transition can trigger terminal responses (cursor position
+			// reports) that arrive as spurious key events.
+			m.suppressInputUntil = time.Now().Add(300 * time.Millisecond)
 			return m, tea.Batch(cmd, syncNotes(m.cfg.NotesDir, m.database))
 		}
 		return m, cmd
+	}
+
+	// Filter key events with non-text-producing modifiers (Super/Cmd, Hyper).
+	// These should never insert text or trigger mode changes. Terminals with
+	// partial Kitty keyboard protocol support may generate spurious key events
+	// with these modifiers.
+	if msg.Mod.Contains(tea.ModSuper) || msg.Mod.Contains(tea.ModHyper) {
+		return m, nil
 	}
 
 	// Global escape
