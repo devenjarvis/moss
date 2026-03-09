@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
-	"syscall"
 
 	"github.com/devenjarvis/moss/internal/note"
 )
@@ -41,8 +40,8 @@ func RunClaude(ctx context.Context, model, prompt, stdin string) (string, error)
 	}
 
 	cmd := exec.CommandContext(ctx, "claude", args...)
-	cmd.Stdin = strings.NewReader(stdin)                 // always set stdin to prevent inheriting terminal
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // detach from controlling terminal
+	cmd.Stdin = strings.NewReader(stdin) // always set stdin to prevent inheriting terminal
+	setSysProcAttr(cmd)                  // detach from controlling terminal (unix only)
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
