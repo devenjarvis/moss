@@ -58,3 +58,117 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+      - name: Gather release context
+        if: env.ANTHROPIC_OAUTH_TOKEN != ''
+        id: context
+        env:
+          ANTHROPIC_OAUTH_TOKEN: ${{ secrets.ANTHROPIC_OAUTH_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          echo "$TAG" > /tmp/release_tag.txt
+
+          # Previous tag for diffing (empty if first release)
+          PREV_TAG=$(git tag --sort=-version:refname | grep -v "^${TAG}$" | head -1)
+
+          # GoReleaser-generated changelog
+          gh release view "$TAG" --json body -q '.body' > /tmp/goreleaser_changelog.txt 2>/dev/null || echo "" > /tmp/goreleaser_changelog.txt
+
+          # Commit log between tags
+          if [ -n "$PREV_TAG" ]; then
+            git log "${PREV_TAG}..${TAG}" --pretty=format:"- %s (%h)" --no-merges > /tmp/commit_log.txt
+            git diff --stat "${PREV_TAG}..${TAG}" | tail -1 > /tmp/diff_stat.txt
+          else
+            git log "${TAG}" --pretty=format:"- %s (%h)" --no-merges > /tmp/commit_log.txt
+            git diff --stat "$(git rev-list --max-parents=0 HEAD)..${TAG}" | tail -1 > /tmp/diff_stat.txt
+          fi
+
+          # Existing release names for deduplication
+          gh release list --json name -q '.[].name' > /tmp/existing_names.txt 2>/dev/null || echo "" > /tmp/existing_names.txt
+
+      - name: Generate AI release name and changelog
+        if: env.ANTHROPIC_OAUTH_TOKEN != ''
+        id: ai_release
+        env:
+          ANTHROPIC_OAUTH_TOKEN: ${{ secrets.ANTHROPIC_OAUTH_TOKEN }}
+        run: |
+          TAG=$(cat /tmp/release_tag.txt)
+          GORELEASER_CHANGELOG=$(cat /tmp/goreleaser_changelog.txt)
+          COMMIT_LOG=$(cat /tmp/commit_log.txt)
+          DIFF_STAT=$(cat /tmp/diff_stat.txt)
+          EXISTING_NAMES=$(cat /tmp/existing_names.txt)
+
+          PROMPT=$(jq -n \
+            --arg tag "$TAG" \
+            --arg changelog "$GORELEASER_CHANGELOG" \
+            --arg commits "$COMMIT_LOG" \
+            --arg stats "$DIFF_STAT" \
+            --arg names "$EXISTING_NAMES" \
+            '{
+              model: "claude-haiku-4-5-20251001",
+              max_tokens: 2048,
+              messages: [{
+                role: "user",
+                content: ("You are writing release notes for moss, an AI-powered note-taking TUI built with Go and Bubble Tea. The app is named after the plant — moss. It stores plain markdown notes with YAML frontmatter, indexes them with SQLite FTS5, and uses Claude for AI features like summarization, tagging, and note generation.\n\nRelease: " + $tag + "\n\nCommit log:\n" + $commits + "\n\nChange stats: " + $stats + "\n\nGoReleaser changelog:\n" + $changelog + "\n\nGenerate two things:\n\n1. RELEASE_NAME: A fun, creative release name (2-4 words). The name MUST be moss-themed or plant-themed — draw from the world of bryophytes, lichens, ferns, forest floor flora, mycology, and the broader botanical world. The name should loosely evoke the spirit of what changed in this release. Do NOT include the version number in the name.\n\nThese names have already been used in previous releases and MUST NOT be reused:\n" + $names + "\n\n2. RELEASE_BODY: A narrative changelog written in a warm, conversational tone. Structure it as:\n   - An opening paragraph (2-3 sentences) that tells the story of what this release is about\n   - A \"What'\''s New\" section with the notable changes described in plain language (not just commit messages restated — explain WHY each change matters to users)\n   - A brief closing line\n   Use markdown formatting. Keep it concise but engaging.\n\nOutput format — use these EXACT delimiters:\n---RELEASE_NAME---\n<the name>\n---END_RELEASE_NAME---\n---RELEASE_BODY---\n<the markdown body>\n---END_RELEASE_BODY---")
+              }]
+            }')
+
+          RESPONSE=$(curl -s -w "\n%{http_code}" \
+            https://api.anthropic.com/v1/messages \
+            -H "content-type: application/json" \
+            -H "Authorization: Bearer $ANTHROPIC_OAUTH_TOKEN" \
+            -H "anthropic-version: 2023-06-01" \
+            -d "$PROMPT")
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | sed '$d')
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::warning::Anthropic API returned HTTP $HTTP_CODE, skipping AI release notes"
+            echo "ai_success=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          AI_TEXT=$(echo "$BODY" | jq -r '.content[0].text')
+
+          RELEASE_NAME=$(echo "$AI_TEXT" | sed -n '/---RELEASE_NAME---/,/---END_RELEASE_NAME---/p' | sed '1d;$d' | xargs)
+          RELEASE_BODY=$(echo "$AI_TEXT" | sed -n '/---RELEASE_BODY---/,/---END_RELEASE_BODY---/p' | sed '1d;$d')
+
+          if [ -z "$RELEASE_NAME" ] || [ -z "$RELEASE_BODY" ]; then
+            echo "::warning::Could not parse AI response, skipping AI release notes"
+            echo "ai_success=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "$RELEASE_NAME" > /tmp/ai_release_name.txt
+          echo "$RELEASE_BODY" > /tmp/ai_release_body.txt
+          echo "ai_success=true" >> "$GITHUB_OUTPUT"
+
+      - name: Update release with AI content
+        if: steps.ai_release.outputs.ai_success == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG=$(cat /tmp/release_tag.txt)
+          RELEASE_NAME=$(cat /tmp/ai_release_name.txt)
+          GORELEASER_CHANGELOG=$(cat /tmp/goreleaser_changelog.txt)
+          RELEASE_BODY=$(cat /tmp/ai_release_body.txt)
+
+          TITLE="${TAG} — ${RELEASE_NAME}"
+
+          FULL_BODY=$(cat <<ENDOFBODY
+          ${RELEASE_BODY}
+
+          ---
+
+          <details>
+          <summary>Full Changelog</summary>
+
+          ${GORELEASER_CHANGELOG}
+
+          </details>
+          ENDOFBODY
+          )
+
+          gh release edit "$TAG" --title "$TITLE" --notes "$FULL_BODY"
