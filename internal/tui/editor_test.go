@@ -594,6 +594,175 @@ func TestEditor_Autocorrect_NilCorrectorNoOp(t *testing.T) {
 	}
 }
 
+// --- Smart list continuation tests ---
+
+func TestEditor_SmartEnter_BulletContinuation(t *testing.T) {
+	e := newBodyEditor(t, "- hello")
+	// Move cursor to end of line
+	repositionCursor(&e.body, 0, 7)
+
+	e, _, _ = e.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	got := e.body.Value()
+	want := "- hello\n- "
+	if got != want {
+		t.Errorf("body = %q, want %q", got, want)
+	}
+	// Cursor should be after "- " on the new line
+	if e.body.Line() != 1 {
+		t.Errorf("cursor line = %d, want 1", e.body.Line())
+	}
+	if e.body.Column() != 2 {
+		t.Errorf("cursor col = %d, want 2", e.body.Column())
+	}
+}
+
+func TestEditor_SmartEnter_StarBullet(t *testing.T) {
+	e := newBodyEditor(t, "* item")
+	repositionCursor(&e.body, 0, 6)
+
+	e, _, _ = e.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	got := e.body.Value()
+	want := "* item\n* "
+	if got != want {
+		t.Errorf("body = %q, want %q", got, want)
+	}
+}
+
+func TestEditor_SmartEnter_OrderedList(t *testing.T) {
+	e := newBodyEditor(t, "1. first")
+	repositionCursor(&e.body, 0, 8)
+
+	e, _, _ = e.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	got := e.body.Value()
+	want := "1. first\n2. "
+	if got != want {
+		t.Errorf("body = %q, want %q", got, want)
+	}
+}
+
+func TestEditor_SmartEnter_Checkbox(t *testing.T) {
+	e := newBodyEditor(t, "- [ ] task one")
+	repositionCursor(&e.body, 0, 14)
+
+	e, _, _ = e.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	got := e.body.Value()
+	want := "- [ ] task one\n- [ ] "
+	if got != want {
+		t.Errorf("body = %q, want %q", got, want)
+	}
+}
+
+func TestEditor_SmartEnter_CheckedCheckbox(t *testing.T) {
+	e := newBodyEditor(t, "- [x] done task")
+	repositionCursor(&e.body, 0, 15)
+
+	e, _, _ = e.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	got := e.body.Value()
+	want := "- [x] done task\n- [ ] "
+	if got != want {
+		t.Errorf("body = %q, want %q", got, want)
+	}
+}
+
+func TestEditor_SmartEnter_IndentedBullet(t *testing.T) {
+	e := newBodyEditor(t, "  - nested item")
+	repositionCursor(&e.body, 0, 15)
+
+	e, _, _ = e.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	got := e.body.Value()
+	want := "  - nested item\n  - "
+	if got != want {
+		t.Errorf("body = %q, want %q", got, want)
+	}
+}
+
+func TestEditor_SmartEnter_EmptyBulletRemoved(t *testing.T) {
+	e := newBodyEditor(t, "- first\n- ")
+	repositionCursor(&e.body, 1, 2)
+
+	e, _, _ = e.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	got := e.body.Value()
+	want := "- first\n"
+	if got != want {
+		t.Errorf("body = %q, want %q", got, want)
+	}
+	// Cursor should be at the now-empty line
+	if e.body.Line() != 1 {
+		t.Errorf("cursor line = %d, want 1", e.body.Line())
+	}
+}
+
+func TestEditor_SmartEnter_EmptyCheckboxRemoved(t *testing.T) {
+	e := newBodyEditor(t, "- [ ] first\n- [ ] ")
+	repositionCursor(&e.body, 1, 6)
+
+	e, _, _ = e.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	got := e.body.Value()
+	want := "- [ ] first\n"
+	if got != want {
+		t.Errorf("body = %q, want %q", got, want)
+	}
+}
+
+func TestEditor_SmartEnter_EmptyOrderedRemoved(t *testing.T) {
+	e := newBodyEditor(t, "1. first\n2. ")
+	repositionCursor(&e.body, 1, 3)
+
+	e, _, _ = e.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	got := e.body.Value()
+	want := "1. first\n"
+	if got != want {
+		t.Errorf("body = %q, want %q", got, want)
+	}
+}
+
+func TestEditor_SmartEnter_NoListNormalNewline(t *testing.T) {
+	e := newBodyEditor(t, "hello world")
+	repositionCursor(&e.body, 0, 5)
+
+	e, _, _ = e.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	got := e.body.Value()
+	// Normal behavior: textarea inserts a newline
+	if !strings.Contains(got, "\n") {
+		t.Errorf("expected newline in body, got %q", got)
+	}
+}
+
+func TestEditor_SmartEnter_MidLineSplit(t *testing.T) {
+	e := newBodyEditor(t, "- hello world")
+	repositionCursor(&e.body, 0, 7) // cursor after "hello"
+
+	e, _, _ = e.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	got := e.body.Value()
+	want := "- hello\n-  world"
+	if got != want {
+		t.Errorf("body = %q, want %q", got, want)
+	}
+}
+
+func TestEditor_SmartEnter_OrderedListRenumber(t *testing.T) {
+	e := newBodyEditor(t, "1. first\n2. second\n3. third")
+	repositionCursor(&e.body, 0, 8) // end of "1. first"
+
+	e, _, _ = e.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	got := e.body.Value()
+	want := "1. first\n2. \n3. second\n4. third"
+	if got != want {
+		t.Errorf("body = %q, want %q", got, want)
+	}
+}
+
+func TestEditor_SmartEnter_MarksDirty(t *testing.T) {
+	e := newBodyEditor(t, "- item")
+	e.dirty = false
+	repositionCursor(&e.body, 0, 6)
+
+	e, _, _ = e.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if !e.dirty {
+		t.Error("should be dirty after smart enter")
+	}
+}
+
 func TestEditor_Autocorrect_AllCapsPreserved(t *testing.T) {
 	e, _ := newTestEditorWithAutocorrect(t)
 	e.setFocus(editorFocusBody)

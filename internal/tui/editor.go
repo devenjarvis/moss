@@ -2,6 +2,8 @@ package tui
 
 import (
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -150,6 +152,10 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd, bool) {
 			if e.focus != editorFocusBody {
 				e.setFocus(editorFocusBody)
 				return e, nil, false
+			}
+			// Smart list continuation in body
+			if handled, cmd := e.handleSmartEnter(); handled {
+				return e, cmd, false
 			}
 
 		case "super+b", "super+i", "super+1", "super+2", "super+3":
@@ -415,6 +421,165 @@ func (e *Editor) outdentLine(spaces int) {
 		newCol = 0
 	}
 	repositionCursor(&e.body, lineIdx, newCol)
+}
+
+// listPrefixRe matches list markers: "- ", "* ", "1. ", "- [ ] ", "- [x] ", etc.
+// It captures: (1) leading whitespace, (2) the marker itself.
+var listPrefixRe = regexp.MustCompile(`^(\s*)([-*]\s\[[ xX]\]\s|[-*]\s|\d+\.\s)`)
+
+// parseListPrefix returns the indentation and list marker for a line, or empty strings if none.
+func parseListPrefix(line string) (indent, marker string) {
+	m := listPrefixRe.FindStringSubmatch(line)
+	if m == nil {
+		return "", ""
+	}
+	return m[1], m[2]
+}
+
+// nextListMarker returns the marker to use on the next line.
+// Ordered list numbers are incremented; checkboxes become unchecked; bullets stay the same.
+func nextListMarker(marker string) string {
+	// Checkbox: always produce unchecked
+	if strings.Contains(marker, "[x]") || strings.Contains(marker, "[X]") || strings.Contains(marker, "[ ]") {
+		bullet := marker[0:1] // '-' or '*'
+		return bullet + " [ ] "
+	}
+	// Ordered list: increment number
+	if i := strings.Index(marker, "."); i > 0 {
+		if num, err := strconv.Atoi(marker[:i]); err == nil {
+			return strconv.Itoa(num+1) + ". "
+		}
+	}
+	// Unordered bullet: keep as-is
+	return marker
+}
+
+// handleSmartEnter processes Enter in the body textarea with smart list continuation.
+// Returns true if it handled the keypress (caller should not delegate to textarea).
+func (e *Editor) handleSmartEnter() (bool, tea.Cmd) {
+	val := e.body.Value()
+	lines := strings.Split(val, "\n")
+	lineIdx := e.body.Line()
+	col := e.body.Column()
+
+	if lineIdx >= len(lines) {
+		return false, nil
+	}
+
+	currentLine := lines[lineIdx]
+	indent, marker := parseListPrefix(currentLine)
+	if marker == "" {
+		return false, nil
+	}
+
+	prefix := indent + marker
+	contentAfterPrefix := currentLine[len(prefix):]
+
+	// Check if the line is "empty" — only the prefix with no real content after it
+	if strings.TrimSpace(contentAfterPrefix) == "" {
+		// Remove the prefix, leaving a blank line (or just indentation removed)
+		lines[lineIdx] = ""
+		e.body.SetValue(strings.Join(lines, "\n"))
+		repositionCursor(&e.body, lineIdx, 0)
+		e.markDirty()
+		return true, e.scheduleAutoSave()
+	}
+
+	// There's content: split the line at cursor and continue the list
+	beforeCursor := currentLine[:col]
+	afterCursor := currentLine[col:]
+
+	next := nextListMarker(marker)
+	newLine := indent + next + strings.TrimLeft(afterCursor, "")
+
+	lines[lineIdx] = beforeCursor
+	// Insert the new line after the current one
+	newLines := make([]string, 0, len(lines)+1)
+	newLines = append(newLines, lines[:lineIdx+1]...)
+	newLines = append(newLines, newLine)
+	if lineIdx+1 < len(lines) {
+		newLines = append(newLines, lines[lineIdx+1:]...)
+	}
+
+	e.body.SetValue(strings.Join(newLines, "\n"))
+	repositionCursor(&e.body, lineIdx+1, len(indent+next))
+
+	// If the list is ordered, renumber subsequent items at the same indent level
+	e.renumberOrderedList(newLines, lineIdx+2, indent)
+
+	e.markDirty()
+	return true, e.scheduleAutoSave()
+}
+
+// renumberOrderedList updates numbering for consecutive ordered list items starting
+// at startIdx, at the given indent level. Stops at the first non-matching line.
+func (e *Editor) renumberOrderedList(lines []string, startIdx int, indent string) {
+	if startIdx >= len(lines) {
+		return
+	}
+	// Check if the previous line was ordered
+	prevIndent, prevMarker := parseListPrefix(lines[startIdx-1])
+	if prevIndent != indent || !isOrderedMarker(prevMarker) {
+		return
+	}
+	prevNum := orderedMarkerNum(prevMarker)
+	if prevNum < 0 {
+		return
+	}
+
+	changed := false
+	num := prevNum + 1
+	for i := startIdx; i < len(lines); i++ {
+		lineIndent, lineMarker := parseListPrefix(lines[i])
+		if lineIndent != indent || !isOrderedMarker(lineMarker) {
+			break
+		}
+		expected := strconv.Itoa(num) + ". "
+		if lineMarker != expected {
+			lines[i] = indent + expected + lines[i][len(lineIndent+lineMarker):]
+			changed = true
+		}
+		num++
+	}
+
+	if changed {
+		curRow := e.body.Line()
+		curCol := e.body.Column()
+		e.body.SetValue(strings.Join(lines, "\n"))
+		repositionCursor(&e.body, curRow, curCol)
+	}
+}
+
+func isOrderedMarker(marker string) bool {
+	return len(marker) > 0 && marker[0] >= '0' && marker[0] <= '9'
+}
+
+func orderedMarkerNum(marker string) int {
+	i := strings.Index(marker, ".")
+	if i <= 0 {
+		return -1
+	}
+	n, err := strconv.Atoi(marker[:i])
+	if err != nil {
+		return -1
+	}
+	return n
+}
+
+// markDirty marks the editor as modified.
+func (e *Editor) markDirty() {
+	e.dirty = true
+	e.saved = false
+	e.lastEdit = time.Now()
+}
+
+// scheduleAutoSave returns a command that schedules an auto-save tick.
+func (e *Editor) scheduleAutoSave() tea.Cmd {
+	e.tickID++
+	tickID := e.tickID
+	return tea.Tick(2*time.Second, func(_ time.Time) tea.Msg {
+		return editorAutoSaveTickMsg{id: tickID}
+	})
 }
 
 // repositionCursor moves the cursor to the given row and column after a SetValue call
