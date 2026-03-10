@@ -8,6 +8,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/devenjarvis/moss/internal/autocorrect"
 	"github.com/devenjarvis/moss/internal/db"
 	"github.com/devenjarvis/moss/internal/note"
 )
@@ -35,7 +36,7 @@ func newTestEditor(t *testing.T) (Editor, *note.Note) {
 	}
 	t.Cleanup(func() { _ = database.Close() })
 
-	e := NewEditor(n, database, 80, 30)
+	e := NewEditor(n, database, 80, 30, nil)
 	return e, n
 }
 
@@ -484,5 +485,129 @@ func TestEditor_SaveNow_WritesToDisk(t *testing.T) {
 	}
 	if parsed.Body != "Updated body content" {
 		t.Errorf("saved body = %q, want %q", parsed.Body, "Updated body content")
+	}
+}
+
+// newTestEditorWithAutocorrect creates a test editor with autocorrect enabled.
+func newTestEditorWithAutocorrect(t *testing.T) (Editor, *note.Note) {
+	t.Helper()
+	dir := t.TempDir()
+
+	content := "---\ntitle: Test Note\ndate: 2024-01-15\ntags:\n- go\n---\n\n"
+	path := filepath.Join(dir, "2024-01-15-test-note.md")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := note.ParseFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+
+	e := NewEditor(n, database, 80, 30, autocorrect.New(true))
+	return e, n
+}
+
+func TestEditor_Autocorrect_BodyTypo(t *testing.T) {
+	e, _ := newTestEditorWithAutocorrect(t)
+	e.setFocus(editorFocusBody)
+	e.body.SetValue("")
+	e.body.MoveToBegin()
+
+	// Type "teh " — each character goes through Update
+	for _, ch := range "teh" {
+		e, _, _ = e.Update(tea.KeyPressMsg{Code: rune(ch), Text: string(ch)})
+	}
+	// Type space (word boundary triggers autocorrect)
+	e, _, _ = e.Update(tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
+
+	got := e.body.Value()
+	if got != "the " {
+		t.Errorf("body = %q, want %q", got, "the ")
+	}
+}
+
+func TestEditor_Autocorrect_BodyOverCap(t *testing.T) {
+	e, _ := newTestEditorWithAutocorrect(t)
+	e.setFocus(editorFocusBody)
+	e.body.SetValue("")
+	e.body.MoveToBegin()
+
+	// Type "THe "
+	for _, ch := range "THe" {
+		e, _, _ = e.Update(tea.KeyPressMsg{Code: rune(ch), Text: string(ch)})
+	}
+	e, _, _ = e.Update(tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
+
+	got := e.body.Value()
+	if got != "The " {
+		t.Errorf("body = %q, want %q", got, "The ")
+	}
+}
+
+func TestEditor_Autocorrect_BackspaceUndo(t *testing.T) {
+	e, _ := newTestEditorWithAutocorrect(t)
+	e.setFocus(editorFocusBody)
+	e.body.SetValue("")
+	e.body.MoveToBegin()
+
+	// Type "teh " — gets corrected to "the "
+	for _, ch := range "teh" {
+		e, _, _ = e.Update(tea.KeyPressMsg{Code: rune(ch), Text: string(ch)})
+	}
+	e, _, _ = e.Update(tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
+
+	if e.body.Value() != "the " {
+		t.Fatalf("expected correction: body = %q", e.body.Value())
+	}
+
+	// Backspace should undo the correction, restoring "teh "
+	e, _, _ = e.Update(tea.KeyPressMsg{Code: tea.KeyBackspace})
+
+	got := e.body.Value()
+	if got != "teh " {
+		t.Errorf("after undo: body = %q, want %q", got, "teh ")
+	}
+}
+
+func TestEditor_Autocorrect_NilCorrectorNoOp(t *testing.T) {
+	e, _ := newTestEditor(t) // nil corrector
+	e.setFocus(editorFocusBody)
+	e.body.SetValue("")
+	e.body.MoveToBegin()
+
+	for _, ch := range "teh" {
+		e, _, _ = e.Update(tea.KeyPressMsg{Code: rune(ch), Text: string(ch)})
+	}
+	e, _, _ = e.Update(tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
+
+	got := e.body.Value()
+	if got != "teh " {
+		t.Errorf("nil corrector: body = %q, want %q (no correction)", got, "teh ")
+	}
+}
+
+func TestEditor_Autocorrect_AllCapsPreserved(t *testing.T) {
+	e, _ := newTestEditorWithAutocorrect(t)
+	e.setFocus(editorFocusBody)
+	e.body.SetValue("")
+	e.body.MoveToBegin()
+
+	// Type "TODO " — should NOT be corrected
+	for _, ch := range "TODO" {
+		e, _, _ = e.Update(tea.KeyPressMsg{Code: rune(ch), Text: string(ch)})
+	}
+	e, _, _ = e.Update(tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
+
+	got := e.body.Value()
+	if got != "TODO " {
+		t.Errorf("body = %q, want %q (all-caps should be preserved)", got, "TODO ")
 	}
 }

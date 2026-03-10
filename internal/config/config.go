@@ -8,8 +8,17 @@ import (
 )
 
 type Config struct {
-	NotesDir string `yaml:"notes_dir"`
-	DBPath   string `yaml:"db_path"`
+	NotesDir    string `yaml:"notes_dir"`
+	DBPath      string `yaml:"db_path"`
+	Autocorrect *bool  `yaml:"autocorrect,omitempty"`
+}
+
+// AutocorrectEnabled returns whether autocorrect is enabled (defaults to true).
+func (c Config) AutocorrectEnabled() bool {
+	if c.Autocorrect == nil {
+		return true
+	}
+	return *c.Autocorrect
 }
 
 func DefaultConfig() Config {

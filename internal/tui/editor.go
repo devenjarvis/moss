@@ -10,6 +10,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"github.com/devenjarvis/moss/internal/autocorrect"
 	"github.com/devenjarvis/moss/internal/db"
 	"github.com/devenjarvis/moss/internal/note"
 )
@@ -53,10 +54,21 @@ type Editor struct {
 	lastEdit time.Time
 	tickID   int
 	topLine  int // first visible logical line for markdown renderer
+
+	corrector      *autocorrect.Corrector
+	lastCorrection *lastCorrectionState // tracks last autocorrect for undo-on-backspace
+}
+
+// lastCorrectionState stores enough info to undo the most recent autocorrect.
+type lastCorrectionState struct {
+	original  string // the word before correction
+	corrected string // the word after correction
+	focus     int    // which field was corrected
+	row       int    // body line (only for body focus)
 }
 
 // NewEditor creates a new editor for the given note.
-func NewEditor(n *note.Note, database *db.DB, width, height int) Editor {
+func NewEditor(n *note.Note, database *db.DB, width, height int, corrector *autocorrect.Corrector) Editor {
 	ti := textinput.New()
 	ti.Placeholder = "Title..."
 	ti.CharLimit = 200
@@ -87,6 +99,7 @@ func NewEditor(n *note.Note, database *db.DB, width, height int) Editor {
 		dateInput:  date,
 		body:       ta,
 		focus:      editorFocusBody,
+		corrector:  corrector,
 	}
 	e.SetSize(width, height)
 	return e
@@ -172,6 +185,21 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd, bool) {
 			return e, nil, false
 		}
 
+		// Undo last autocorrect on backspace
+		if e.lastCorrection != nil && (msg.Code == tea.KeyBackspace || key == "backspace") {
+			if e.undoLastCorrection() {
+				e.dirty = true
+				e.saved = false
+				e.lastEdit = time.Now()
+				e.tickID++
+				tickID := e.tickID
+				tickCmd := tea.Tick(2*time.Second, func(_ time.Time) tea.Msg {
+					return editorAutoSaveTickMsg{id: tickID}
+				})
+				return e, tickCmd, false
+			}
+		}
+
 		// Delegate to focused widget
 		var cmd tea.Cmd
 		switch e.focus {
@@ -183,6 +211,19 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd, bool) {
 			e.dateInput, cmd = e.dateInput.Update(msg)
 		case editorFocusBody:
 			e.body, cmd = e.body.Update(msg)
+		}
+
+		// Autocorrect after word boundary
+		if e.corrector != nil && isWordBoundary(msg) {
+			switch e.focus {
+			case editorFocusTitle:
+				e.autocorrectTextInput(&e.titleInput)
+			case editorFocusBody:
+				e.autocorrectTextArea()
+			}
+		} else {
+			// Any non-boundary key clears the undo state
+			e.lastCorrection = nil
 		}
 
 		// Mark dirty and schedule auto-save
@@ -521,4 +562,174 @@ func (e *Editor) saveNow() tea.Cmd {
 
 		return editorSavedMsg{newPath: newPath}
 	}
+}
+
+// isWordBoundary returns true if the key event represents a word boundary character.
+func isWordBoundary(msg tea.KeyPressMsg) bool {
+	if msg.Code == tea.KeyEnter || msg.Code == tea.KeySpace {
+		return true
+	}
+	if len(msg.Text) == 1 {
+		switch msg.Text[0] {
+		case '.', ',', '!', '?', ';', ':', ')', ']', '}', '-':
+			return true
+		}
+	}
+	return false
+}
+
+// isWordChar returns true if r is a character that can be part of a word.
+func isWordChar(r rune) bool {
+	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '\''
+}
+
+// autocorrectTextArea checks and corrects the word just completed in the body textarea.
+func (e *Editor) autocorrectTextArea() {
+	row := e.body.Line()
+	col := e.body.Column()
+	value := e.body.Value()
+	lines := strings.Split(value, "\n")
+
+	if row >= len(lines) {
+		return
+	}
+
+	line := lines[row]
+
+	// The cursor is after the boundary char. The word ended just before it.
+	wordEnd := col - 1
+	if wordEnd <= 0 {
+		return
+	}
+
+	// Scan backwards to find word start
+	wordStart := wordEnd
+	for wordStart > 0 && isWordChar(rune(line[wordStart-1])) {
+		wordStart--
+	}
+
+	if wordStart == wordEnd {
+		return
+	}
+
+	word := line[wordStart:wordEnd]
+	correction := e.corrector.CorrectWord(word)
+	if correction == nil {
+		return
+	}
+
+	// Replace word in line
+	lines[row] = line[:wordStart] + correction.Corrected + line[wordEnd:]
+	e.body.SetValue(strings.Join(lines, "\n"))
+
+	// Restore cursor position (corrected word may differ in length)
+	newCol := col + (len(correction.Corrected) - len(word))
+	repositionCursor(&e.body, row, newCol)
+
+	// Store for undo
+	e.lastCorrection = &lastCorrectionState{
+		original:  correction.Original,
+		corrected: correction.Corrected,
+		focus:     editorFocusBody,
+		row:       row,
+	}
+}
+
+// autocorrectTextInput checks and corrects the word just completed in a text input field.
+func (e *Editor) autocorrectTextInput(ti *textinput.Model) {
+	val := ti.Value()
+	pos := ti.Position()
+
+	if pos <= 1 {
+		return
+	}
+
+	// Word ended just before the boundary char at pos-1
+	wordEnd := pos - 1
+	if wordEnd <= 0 {
+		return
+	}
+
+	wordStart := wordEnd
+	for wordStart > 0 && isWordChar(rune(val[wordStart-1])) {
+		wordStart--
+	}
+
+	if wordStart == wordEnd {
+		return
+	}
+
+	word := val[wordStart:wordEnd]
+	correction := e.corrector.CorrectWord(word)
+	if correction == nil {
+		return
+	}
+
+	newVal := val[:wordStart] + correction.Corrected + val[wordEnd:]
+	ti.SetValue(newVal)
+	ti.SetCursor(pos + (len(correction.Corrected) - len(word)))
+
+	// Store for undo
+	e.lastCorrection = &lastCorrectionState{
+		original:  correction.Original,
+		corrected: correction.Corrected,
+		focus:     e.focus,
+	}
+}
+
+// undoLastCorrection reverses the most recent autocorrect. Returns true if an undo was performed.
+func (e *Editor) undoLastCorrection() bool {
+	lc := e.lastCorrection
+	if lc == nil || lc.focus != e.focus {
+		return false
+	}
+
+	switch lc.focus {
+	case editorFocusBody:
+		value := e.body.Value()
+		lines := strings.Split(value, "\n")
+		if lc.row >= len(lines) {
+			return false
+		}
+		line := lines[lc.row]
+		col := e.body.Column()
+
+		// The boundary char is at col-1 (cursor is after it), corrected word ends at col-2
+		// Find the corrected word in the line near the cursor
+		searchEnd := col - 1 // position of boundary char
+		searchStart := searchEnd - len(lc.corrected)
+		if searchStart < 0 || searchEnd > len(line) {
+			return false
+		}
+		if line[searchStart:searchEnd] != lc.corrected {
+			return false
+		}
+
+		// Replace corrected word with original
+		lines[lc.row] = line[:searchStart] + lc.original + line[searchEnd:]
+		e.body.SetValue(strings.Join(lines, "\n"))
+		newCol := col + (len(lc.original) - len(lc.corrected))
+		repositionCursor(&e.body, lc.row, newCol)
+
+	case editorFocusTitle:
+		val := e.titleInput.Value()
+		pos := e.titleInput.Position()
+		searchEnd := pos - 1
+		searchStart := searchEnd - len(lc.corrected)
+		if searchStart < 0 || searchEnd > len(val) {
+			return false
+		}
+		if val[searchStart:searchEnd] != lc.corrected {
+			return false
+		}
+		newVal := val[:searchStart] + lc.original + val[searchEnd:]
+		e.titleInput.SetValue(newVal)
+		e.titleInput.SetCursor(pos + (len(lc.original) - len(lc.corrected)))
+
+	default:
+		return false
+	}
+
+	e.lastCorrection = nil
+	return true
 }
