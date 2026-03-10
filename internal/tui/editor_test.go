@@ -54,8 +54,8 @@ func TestNewEditor_PopulatesFields(t *testing.T) {
 	if e.body.Value() != "Hello world body" {
 		t.Errorf("body = %q, want %q", e.body.Value(), "Hello world body")
 	}
-	if e.focus != editorFocusTitle {
-		t.Errorf("initial focus = %d, want %d (title)", e.focus, editorFocusTitle)
+	if e.focus != editorFocusBody {
+		t.Errorf("initial focus = %d, want %d (body)", e.focus, editorFocusBody)
 	}
 	if e.dirty {
 		t.Error("editor should not be dirty initially")
@@ -65,44 +65,52 @@ func TestNewEditor_PopulatesFields(t *testing.T) {
 func TestEditor_FocusCycling_Tab(t *testing.T) {
 	e, _ := newTestEditor(t)
 
-	if e.focus != editorFocusTitle {
-		t.Fatalf("initial focus = %d, want %d", e.focus, editorFocusTitle)
+	// Start in body (default); Tab indents, focus stays on body
+	if e.focus != editorFocusBody {
+		t.Fatalf("initial focus = %d, want %d (body)", e.focus, editorFocusBody)
+	}
+	e, _, _ = e.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	if e.focus != editorFocusBody {
+		t.Errorf("tab in body: focus = %d, want %d (body, tab indents not cycles)", e.focus, editorFocusBody)
 	}
 
-	// Tab cycles: title -> tags -> date -> body -> title
+	// Tab in frontmatter cycles title -> tags -> date -> title (no body)
+	e.setFocus(editorFocusTitle)
 	e, _, _ = e.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 	if e.focus != editorFocusTags {
-		t.Errorf("after tab: focus = %d, want %d (tags)", e.focus, editorFocusTags)
+		t.Errorf("after tab from title: focus = %d, want %d (tags)", e.focus, editorFocusTags)
 	}
 
 	e, _, _ = e.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 	if e.focus != editorFocusDate {
-		t.Errorf("after 2nd tab: focus = %d, want %d (date)", e.focus, editorFocusDate)
-	}
-
-	e, _, _ = e.Update(tea.KeyPressMsg{Code: tea.KeyTab})
-	if e.focus != editorFocusBody {
-		t.Errorf("after 3rd tab: focus = %d, want %d (body)", e.focus, editorFocusBody)
+		t.Errorf("after tab from tags: focus = %d, want %d (date)", e.focus, editorFocusDate)
 	}
 
 	e, _, _ = e.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 	if e.focus != editorFocusTitle {
-		t.Errorf("after 4th tab: focus = %d, want %d (title, wraps)", e.focus, editorFocusTitle)
+		t.Errorf("after tab from date: focus = %d, want %d (title, wraps within frontmatter)", e.focus, editorFocusTitle)
 	}
 }
 
 func TestEditor_FocusCycling_ShiftTab(t *testing.T) {
 	e, _ := newTestEditor(t)
 
-	// Shift+Tab goes backwards: title -> body -> date -> tags -> title
+	// Shift+Tab in body outdents, focus stays on body
 	e, _, _ = e.Update(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
 	if e.focus != editorFocusBody {
-		t.Errorf("after shift+tab: focus = %d, want %d (body)", e.focus, editorFocusBody)
+		t.Errorf("shift+tab in body: focus = %d, want %d (body, shift+tab outdents)", e.focus, editorFocusBody)
+	}
+
+	// Shift+Tab in frontmatter cycles backwards: title -> date -> tags -> title
+	e.setFocus(editorFocusTitle)
+	e, _, _ = e.Update(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
+	if e.focus != editorFocusDate {
+		t.Errorf("after shift+tab from title: focus = %d, want %d (date, wraps within frontmatter)", e.focus, editorFocusDate)
 	}
 
 	e, _, _ = e.Update(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
-	if e.focus != editorFocusDate {
-		t.Errorf("after 2nd shift+tab: focus = %d, want %d (date)", e.focus, editorFocusDate)
+	if e.focus != editorFocusTags {
+		t.Errorf("after shift+tab from date: focus = %d, want %d (tags)", e.focus, editorFocusTags)
 	}
 }
 
@@ -402,7 +410,8 @@ func TestEditor_Heading_SwitchLevel(t *testing.T) {
 
 func TestEditor_MarkdownShortcuts_NoOpWhenNotBody(t *testing.T) {
 	e, _ := newTestEditor(t)
-	// Focus is on title (default)
+	// Move to title explicitly (default is body)
+	e.setFocus(editorFocusTitle)
 	originalBody := e.body.Value()
 
 	e, _, _ = e.Update(tea.KeyPressMsg{Code: 'b', Mod: tea.ModSuper})

@@ -61,7 +61,6 @@ func NewEditor(n *note.Note, database *db.DB, width, height int) Editor {
 	ti.Placeholder = "Title..."
 	ti.CharLimit = 200
 	ti.SetValue(n.Title)
-	ti.Focus()
 
 	tags := textinput.New()
 	tags.Placeholder = "tag1, tag2, ..."
@@ -78,6 +77,7 @@ func NewEditor(n *note.Note, database *db.DB, width, height int) Editor {
 	ta.SetValue(n.Body)
 	ta.ShowLineNumbers = false
 	ta.CharLimit = 0 // unlimited
+	ta.Focus()
 
 	e := Editor{
 		note:       n,
@@ -86,7 +86,7 @@ func NewEditor(n *note.Note, database *db.DB, width, height int) Editor {
 		tagsInput:  tags,
 		dateInput:  date,
 		body:       ta,
-		focus:      editorFocusTitle,
+		focus:      editorFocusBody,
 	}
 	e.SetSize(width, height)
 	return e
@@ -109,11 +109,27 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd, bool) {
 			return e, e.saveNow(), false
 
 		case "tab":
+			if e.focus == editorFocusBody {
+				e.indentLine(2)
+				return e, nil, false
+			}
 			e.cycleFocus(1)
 			return e, nil, false
 
 		case "shift+tab":
+			if e.focus == editorFocusBody {
+				e.outdentLine(2)
+				return e, nil, false
+			}
 			e.cycleFocus(-1)
+			return e, nil, false
+
+		case "ctrl+m":
+			if e.focus == editorFocusBody {
+				e.setFocus(editorFocusTitle)
+			} else {
+				e.setFocus(editorFocusBody)
+			}
 			return e, nil, false
 
 		case "enter":
@@ -237,7 +253,7 @@ func (e *Editor) View(width, height int) string {
 	} else if e.saved {
 		status = editorSavedStyle.Render("✓ saved")
 	} else {
-		status = helpStyle.Render("Tab: next field  Esc: save & close  Ctrl+S: save  ⌘B/I: bold/italic  ⌘1-3: heading")
+		status = helpStyle.Render("Tab: indent  Shift+Tab: outdent  Ctrl+M: frontmatter  Esc: save & close  Ctrl+S: save  ⌘B/I: bold/italic  ⌘1-3: heading")
 	}
 
 	// Body takes remaining space
@@ -296,7 +312,9 @@ func (e Editor) FilePath() string {
 }
 
 func (e *Editor) cycleFocus(direction int) {
-	next := (e.focus + direction + 4) % 4
+	// Tab only cycles within frontmatter fields (title, tags, date); body is reached via Enter or Ctrl+M
+	const frontmatterCount = 3 // editorFocusTitle, editorFocusTags, editorFocusDate
+	next := (e.focus + direction + frontmatterCount) % frontmatterCount
 	e.setFocus(next)
 }
 
@@ -326,6 +344,36 @@ func (e *Editor) setFocus(focus int) {
 	case editorFocusBody:
 		e.body.Focus()
 	}
+}
+
+func (e *Editor) indentLine(spaces int) {
+	val := e.body.Value()
+	lines := strings.Split(val, "\n")
+	lineIdx := e.body.Line()
+	col := e.body.Column()
+	prefix := strings.Repeat(" ", spaces)
+	lines[lineIdx] = prefix + lines[lineIdx]
+	e.body.SetValue(strings.Join(lines, "\n"))
+	repositionCursor(&e.body, lineIdx, col+spaces)
+}
+
+func (e *Editor) outdentLine(spaces int) {
+	val := e.body.Value()
+	lines := strings.Split(val, "\n")
+	lineIdx := e.body.Line()
+	col := e.body.Column()
+	line := lines[lineIdx]
+	removed := 0
+	for removed < spaces && removed < len(line) && line[removed] == ' ' {
+		removed++
+	}
+	lines[lineIdx] = line[removed:]
+	e.body.SetValue(strings.Join(lines, "\n"))
+	newCol := col - removed
+	if newCol < 0 {
+		newCol = 0
+	}
+	repositionCursor(&e.body, lineIdx, newCol)
 }
 
 // repositionCursor moves the cursor to the given row and column after a SetValue call
