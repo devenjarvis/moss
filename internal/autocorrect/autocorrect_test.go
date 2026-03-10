@@ -119,11 +119,11 @@ func TestFixOverCap_EdgeCases(t *testing.T) {
 		input string
 		want  string
 	}{
-		{"Ab", "Ab"},       // only 1 leading uppercase, no fix
-		{"AB", "AB"},       // all caps, preserve
-		{"ABc", "Abc"},     // 2 upper + 1 lower, fix
-		{"HELLO", "HELLO"}, // all caps, preserve
-		{"hello", "hello"}, // all lower, no fix
+		{"Ab", "Ab"},         // only 1 leading uppercase, no fix
+		{"AB", "AB"},         // all caps, preserve
+		{"ABc", "Abc"},       // 2 upper + 1 lower, fix
+		{"HELLO", "HELLO"},   // all caps, preserve
+		{"hello", "hello"},   // all lower, no fix
 		{"iPhone", "iPhone"}, // camelCase-like, no fix (uppercase not leading)
 	}
 	for _, tt := range tests {
