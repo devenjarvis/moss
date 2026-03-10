@@ -764,8 +764,8 @@ func TestListHeight(t *testing.T) {
 	m.height = 40
 
 	h := m.listHeight()
-	if h != 34 { // 40 - 6
-		t.Errorf("listHeight() = %d, want 34", h)
+	if h != 35 { // 40 - 5 (status bar 1 + borders 2 + title 1 + input bar 1)
+		t.Errorf("listHeight() = %d, want 35", h)
 	}
 }
 
