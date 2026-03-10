@@ -524,3 +524,63 @@ func TestInjectCursor_CheckboxMarker(t *testing.T) {
 		}
 	}
 }
+
+func TestTokenizeLine_IndentedBullet(t *testing.T) {
+	spans, _ := tokenizeLine("  - item", false)
+	if len(spans) < 2 {
+		t.Fatalf("expected at least 2 spans, got %d", len(spans))
+	}
+	if spans[0].kind != spanText {
+		t.Errorf("span[0].kind = %d, want spanText (indent)", spans[0].kind)
+	}
+	if spans[0].text != "  " {
+		t.Errorf("span[0].text = %q, want %q (indent)", spans[0].text, "  ")
+	}
+	if spans[0].rawStart != 0 || spans[0].rawEnd != 2 {
+		t.Errorf("span[0] raw = [%d, %d), want [0, 2)", spans[0].rawStart, spans[0].rawEnd)
+	}
+	if spans[1].kind != spanBulletMarker {
+		t.Errorf("span[1].kind = %d, want spanBulletMarker", spans[1].kind)
+	}
+	if spans[1].text != "• " {
+		t.Errorf("span[1].text = %q, want %q", spans[1].text, "• ")
+	}
+	if spans[1].rawStart != 2 || spans[1].rawEnd != 4 {
+		t.Errorf("span[1] raw = [%d, %d), want [2, 4)", spans[1].rawStart, spans[1].rawEnd)
+	}
+	if spans[2].kind != spanBulletContent {
+		t.Errorf("span[2].kind = %d, want spanBulletContent", spans[2].kind)
+	}
+}
+
+func TestTokenizeLine_IndentedOrderedList(t *testing.T) {
+	spans, _ := tokenizeLine("  1. item", false)
+	if len(spans) < 2 {
+		t.Fatalf("expected at least 2 spans, got %d", len(spans))
+	}
+	if spans[0].kind != spanText || spans[0].text != "  " {
+		t.Errorf("span[0] = {%q, %d}, want indent spanText", spans[0].text, spans[0].kind)
+	}
+	if spans[1].kind != spanOrderedMarker {
+		t.Errorf("span[1].kind = %d, want spanOrderedMarker", spans[1].kind)
+	}
+	if spans[1].rawStart != 2 || spans[1].rawEnd != 5 {
+		t.Errorf("span[1] raw = [%d, %d), want [2, 5)", spans[1].rawStart, spans[1].rawEnd)
+	}
+}
+
+func TestTokenizeLine_IndentedCheckbox(t *testing.T) {
+	spans, _ := tokenizeLine("  - [ ] task", false)
+	if len(spans) < 2 {
+		t.Fatalf("expected at least 2 spans, got %d", len(spans))
+	}
+	if spans[0].kind != spanText || spans[0].text != "  " {
+		t.Errorf("span[0] = {%q, %d}, want indent spanText", spans[0].text, spans[0].kind)
+	}
+	if spans[1].kind != spanCheckboxOpen {
+		t.Errorf("span[1].kind = %d, want spanCheckboxOpen", spans[1].kind)
+	}
+	if spans[1].rawStart != 2 || spans[1].rawEnd != 8 {
+		t.Errorf("span[1] raw = [%d, %d), want [2, 8)", spans[1].rawStart, spans[1].rawEnd)
+	}
+}

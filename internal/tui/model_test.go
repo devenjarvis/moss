@@ -1878,17 +1878,12 @@ func TestEditMode_TabDelegatedToEditor(t *testing.T) {
 	model, _ := m.Update(specialKeyMsg(tea.KeyEnter))
 	m = model.(Model)
 
-	initialFocus := m.editor.focus
-
-	// Tab should cycle editor focus, not switch panes
+	// Tab should be handled by editor (indent in body), not switch panes
 	model, _ = m.Update(keyMsg("tab"))
 	m = model.(Model)
 
 	if m.mode != modeEdit {
 		t.Error("should still be in edit mode after Tab")
-	}
-	if m.editor.focus == initialFocus {
-		t.Error("editor focus should have changed after Tab")
 	}
 	// Active pane should not have changed
 	if m.activePane != panePreview {

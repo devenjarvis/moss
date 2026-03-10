@@ -141,30 +141,42 @@ func tokenizeLine(line string, inFence bool) (spans []textSpan, togglesFence boo
 		return append([]textSpan{marker}, content...), false
 	}
 
+	// Unordered and ordered lists — support leading indentation
+	indent := len(line) - len(strings.TrimLeft(line, " \t"))
+	stripped := line[indent:]
+
 	// Unordered list (including checkboxes)
-	if strings.HasPrefix(line, "- ") || strings.HasPrefix(line, "* ") {
-		rest := line[2:]
+	if strings.HasPrefix(stripped, "- ") || strings.HasPrefix(stripped, "* ") {
+		rest := stripped[2:]
+		var spans []textSpan
+		if indent > 0 {
+			spans = append(spans, textSpan{text: line[:indent], kind: spanText, rawStart: 0, rawEnd: indent})
+		}
 		if strings.HasPrefix(rest, "[ ] ") {
-			marker := textSpan{text: line[:6], kind: spanCheckboxOpen, rawStart: 0, rawEnd: 6}
-			content := parseInlineWithDefaultKind(rest[4:], 6, spanCheckboxOpenContent)
-			return append([]textSpan{marker}, content...), false
+			marker := textSpan{text: stripped[:6], kind: spanCheckboxOpen, rawStart: indent, rawEnd: indent + 6}
+			content := parseInlineWithDefaultKind(rest[4:], indent+6, spanCheckboxOpenContent)
+			return append(append(spans, marker), content...), false
 		}
 		if strings.HasPrefix(rest, "[x] ") || strings.HasPrefix(rest, "[X] ") {
-			marker := textSpan{text: line[:6], kind: spanCheckboxDone, rawStart: 0, rawEnd: 6}
-			content := parseInlineWithDefaultKind(rest[4:], 6, spanCheckboxDoneContent)
-			return append([]textSpan{marker}, content...), false
+			marker := textSpan{text: stripped[:6], kind: spanCheckboxDone, rawStart: indent, rawEnd: indent + 6}
+			content := parseInlineWithDefaultKind(rest[4:], indent+6, spanCheckboxDoneContent)
+			return append(append(spans, marker), content...), false
 		}
-		marker := textSpan{text: "• ", kind: spanBulletMarker, rawStart: 0, rawEnd: 2}
-		content := parseInlineWithDefaultKind(line[2:], 2, spanBulletContent)
-		return append([]textSpan{marker}, content...), false
+		marker := textSpan{text: "• ", kind: spanBulletMarker, rawStart: indent, rawEnd: indent + 2}
+		content := parseInlineWithDefaultKind(stripped[2:], indent+2, spanBulletContent)
+		return append(append(spans, marker), content...), false
 	}
 
 	// Ordered list
-	if loc := orderedListRe.FindStringIndex(line); loc != nil {
+	if loc := orderedListRe.FindStringIndex(stripped); loc != nil {
 		prefixLen := loc[1]
-		marker := textSpan{text: line[:prefixLen], kind: spanOrderedMarker, rawStart: 0, rawEnd: prefixLen}
-		content := parseInlineWithDefaultKind(line[prefixLen:], prefixLen, spanOrderedContent)
-		return append([]textSpan{marker}, content...), false
+		var spans []textSpan
+		if indent > 0 {
+			spans = append(spans, textSpan{text: line[:indent], kind: spanText, rawStart: 0, rawEnd: indent})
+		}
+		marker := textSpan{text: stripped[:prefixLen], kind: spanOrderedMarker, rawStart: indent, rawEnd: indent + prefixLen}
+		content := parseInlineWithDefaultKind(stripped[prefixLen:], indent+prefixLen, spanOrderedContent)
+		return append(append(spans, marker), content...), false
 	}
 
 	// Plain text
