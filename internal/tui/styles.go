@@ -115,6 +115,6 @@ var (
 	// Checkbox styles
 	mdCheckboxOpenStyle        = lipgloss.NewStyle().Foreground(colorWarning)
 	mdCheckboxDoneStyle        = lipgloss.NewStyle().Foreground(colorAccent)
-	mdCheckboxOpenContentStyle = lipgloss.NewStyle().Foreground(colorFg)
+	mdCheckboxOpenContentStyle = lipgloss.NewStyle().Foreground(colorWarning)
 	mdCheckboxDoneContentStyle = lipgloss.NewStyle().Foreground(colorAccent).Faint(true)
 )
