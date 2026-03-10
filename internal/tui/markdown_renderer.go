@@ -1,0 +1,495 @@
+package tui
+
+import (
+	"regexp"
+	"strings"
+	"unicode/utf8"
+
+	"charm.land/lipgloss/v2"
+)
+
+type spanKind int
+
+const (
+	spanText            spanKind = iota
+	spanH1Marker                 // "# " prefix — dimmed
+	spanH1Content                // heading text — purple bold
+	spanH2Marker                 // "## " prefix
+	spanH2Content                // cyan bold
+	spanH3Marker
+	spanH3Content // fg bold
+	spanH4Marker
+	spanH4Content        // bold
+	spanBoldMarker       // "**" — dimmed
+	spanBold             // bold text
+	spanItalicMarker     // "*" or "_" — dimmed
+	spanItalic           // italic text
+	spanBoldItalicMarker // "***" — dimmed
+	spanBoldItalic       // bold+italic text
+	spanCodeMarker       // "`" — dimmed
+	spanCode             // background highlight
+	spanBulletMarker     // "• " replacing "- " — accent color
+	spanBulletContent
+	spanOrderedMarker  // "1. " — accent color
+	spanOrderedContent
+	spanBlockquoteMarker  // "│ " replacing "> " — purple
+	spanBlockquoteContent // muted fg
+	spanHRule             // whole line as styled rule
+	spanFenceMarker       // ``` line — dimmed
+	spanFenceContent      // lines inside fence — code bg
+	spanCursor            // character under cursor — reversed
+	spanCursorEOL         // phantom cursor at EOL — reversed space
+	spanCheckboxOpen        // "☐ " replacing "- [ ] " — yellow
+	spanCheckboxDone        // "☑ " replacing "- [x] " — green
+	spanCheckboxOpenContent // task text — normal fg
+	spanCheckboxDoneContent // task text — green + faint
+)
+
+type textSpan struct {
+	text     string
+	kind     spanKind
+	rawStart int // byte offset in source line (for cursor hit-testing)
+	rawEnd   int
+}
+
+var orderedListRe = regexp.MustCompile(`^[0-9]+\. `)
+
+// renderMarkdownBody renders the body text with markdown styling, returning
+// exactly height lines of width characters.
+func renderMarkdownBody(rawText string, cursorLine, cursorCol int, focused bool, width, height, topLine int) string {
+	lines := strings.Split(rawText, "\n")
+
+	// Pre-scan lines before topLine to determine fence state at topLine
+	inFence := false
+	for i := 0; i < topLine && i < len(lines); i++ {
+		trimmed := strings.TrimSpace(lines[i])
+		if strings.HasPrefix(trimmed, "```") {
+			inFence = !inFence
+		}
+	}
+
+	rendered := make([]string, 0, height)
+	for lineIdx := topLine; lineIdx < topLine+height; lineIdx++ {
+		var line string
+		if lineIdx < len(lines) {
+			line = lines[lineIdx]
+		}
+
+		spans, togglesFence := tokenizeLine(line, inFence)
+		if togglesFence {
+			inFence = !inFence
+		}
+
+		// Replace HRule text with full-width rule now that we have width
+		if len(spans) == 1 && spans[0].kind == spanHRule {
+			spans[0].text = strings.Repeat("─", width)
+		}
+
+		if focused && lineIdx == cursorLine {
+			if lineIdx < len(lines) {
+				spans = injectCursor(spans, line, cursorCol)
+			} else {
+				spans = append(spans, textSpan{text: " ", kind: spanCursorEOL})
+			}
+		}
+
+		rendered = append(rendered, renderLine(spans, width))
+	}
+
+	return strings.Join(rendered, "\n")
+}
+
+// tokenizeLine tokenizes one source line into styled spans.
+// It returns the spans and whether this line toggles fence state.
+func tokenizeLine(line string, inFence bool) (spans []textSpan, togglesFence bool) {
+	trimmed := strings.TrimSpace(line)
+
+	// Fenced code delimiter
+	if strings.HasPrefix(trimmed, "```") {
+		return []textSpan{{text: line, kind: spanFenceMarker, rawStart: 0, rawEnd: len(line)}}, true
+	}
+
+	// Inside fence — no inline parsing
+	if inFence {
+		return []textSpan{{text: line, kind: spanFenceContent, rawStart: 0, rawEnd: len(line)}}, false
+	}
+
+	// Horizontal rule: trimmed line is all -, *, or _ with 3+ chars
+	if isHorizontalRule(trimmed) {
+		// text will be replaced in renderMarkdownBody with full-width rule
+		return []textSpan{{text: trimmed, kind: spanHRule, rawStart: 0, rawEnd: len(line)}}, false
+	}
+
+	// Headings — check longest prefix first to avoid ## matching as #
+	if strings.HasPrefix(line, "#### ") {
+		return tokenizeHeading(line, 5, spanH4Marker, spanH4Content), false
+	}
+	if strings.HasPrefix(line, "### ") {
+		return tokenizeHeading(line, 4, spanH3Marker, spanH3Content), false
+	}
+	if strings.HasPrefix(line, "## ") {
+		return tokenizeHeading(line, 3, spanH2Marker, spanH2Content), false
+	}
+	if strings.HasPrefix(line, "# ") {
+		return tokenizeHeading(line, 2, spanH1Marker, spanH1Content), false
+	}
+
+	// Blockquote
+	if strings.HasPrefix(line, "> ") {
+		marker := textSpan{text: "│ ", kind: spanBlockquoteMarker, rawStart: 0, rawEnd: 2}
+		content := parseInlineWithDefaultKind(line[2:], 2, spanBlockquoteContent)
+		return append([]textSpan{marker}, content...), false
+	}
+
+	// Unordered list (including checkboxes)
+	if strings.HasPrefix(line, "- ") || strings.HasPrefix(line, "* ") {
+		rest := line[2:]
+		if strings.HasPrefix(rest, "[ ] ") {
+			marker := textSpan{text: "☐ ", kind: spanCheckboxOpen, rawStart: 0, rawEnd: 6}
+			content := parseInlineWithDefaultKind(rest[4:], 6, spanCheckboxOpenContent)
+			return append([]textSpan{marker}, content...), false
+		}
+		if strings.HasPrefix(rest, "[x] ") || strings.HasPrefix(rest, "[X] ") {
+			marker := textSpan{text: "☑ ", kind: spanCheckboxDone, rawStart: 0, rawEnd: 6}
+			content := parseInlineWithDefaultKind(rest[4:], 6, spanCheckboxDoneContent)
+			return append([]textSpan{marker}, content...), false
+		}
+		marker := textSpan{text: "• ", kind: spanBulletMarker, rawStart: 0, rawEnd: 2}
+		content := parseInlineWithDefaultKind(line[2:], 2, spanBulletContent)
+		return append([]textSpan{marker}, content...), false
+	}
+
+	// Ordered list
+	if loc := orderedListRe.FindStringIndex(line); loc != nil {
+		prefixLen := loc[1]
+		marker := textSpan{text: line[:prefixLen], kind: spanOrderedMarker, rawStart: 0, rawEnd: prefixLen}
+		content := parseInlineWithDefaultKind(line[prefixLen:], prefixLen, spanOrderedContent)
+		return append([]textSpan{marker}, content...), false
+	}
+
+	// Plain text
+	return parseInline(line, 0), false
+}
+
+func tokenizeHeading(line string, prefixLen int, markerKind, contentKind spanKind) []textSpan {
+	marker := textSpan{
+		text:     line[:prefixLen],
+		kind:     markerKind,
+		rawStart: 0,
+		rawEnd:   prefixLen,
+	}
+	content := parseInlineWithDefaultKind(line[prefixLen:], prefixLen, contentKind)
+	return append([]textSpan{marker}, content...)
+}
+
+// parseInlineWithDefaultKind parses inline markdown, using defaultKind instead of spanText.
+func parseInlineWithDefaultKind(raw string, rawOffset int, defaultKind spanKind) []textSpan {
+	spans := parseInline(raw, rawOffset)
+	for i := range spans {
+		if spans[i].kind == spanText {
+			spans[i].kind = defaultKind
+		}
+	}
+	return spans
+}
+
+// parseInline parses inline markdown (bold, italic, code) within a substring.
+// rawOffset is the byte offset of raw within the full source line.
+func parseInline(raw string, rawOffset int) []textSpan {
+	var spans []textSpan
+	plainByteStart := 0
+	i := 0
+
+	flushPlain := func() {
+		if i > plainByteStart {
+			spans = append(spans, textSpan{
+				text:     raw[plainByteStart:i],
+				kind:     spanText,
+				rawStart: rawOffset + plainByteStart,
+				rawEnd:   rawOffset + i,
+			})
+		}
+	}
+
+	for i < len(raw) {
+		// *** bold-italic (must check before **)
+		if strings.HasPrefix(raw[i:], "***") {
+			closeIdx := strings.Index(raw[i+3:], "***")
+			if closeIdx >= 0 {
+				flushPlain()
+				openEnd := i + 3
+				closeStart := openEnd + closeIdx
+				closeEnd := closeStart + 3
+				spans = append(spans,
+					textSpan{text: "***", kind: spanBoldItalicMarker, rawStart: rawOffset + i, rawEnd: rawOffset + openEnd},
+					textSpan{text: raw[openEnd:closeStart], kind: spanBoldItalic, rawStart: rawOffset + openEnd, rawEnd: rawOffset + closeStart},
+					textSpan{text: "***", kind: spanBoldItalicMarker, rawStart: rawOffset + closeStart, rawEnd: rawOffset + closeEnd},
+				)
+				i = closeEnd
+				plainByteStart = i
+				continue
+			}
+		}
+
+		// ** bold (must check before single *)
+		if strings.HasPrefix(raw[i:], "**") {
+			closeIdx := strings.Index(raw[i+2:], "**")
+			if closeIdx >= 0 {
+				flushPlain()
+				openEnd := i + 2
+				closeStart := openEnd + closeIdx
+				closeEnd := closeStart + 2
+				spans = append(spans,
+					textSpan{text: "**", kind: spanBoldMarker, rawStart: rawOffset + i, rawEnd: rawOffset + openEnd},
+					textSpan{text: raw[openEnd:closeStart], kind: spanBold, rawStart: rawOffset + openEnd, rawEnd: rawOffset + closeStart},
+					textSpan{text: "**", kind: spanBoldMarker, rawStart: rawOffset + closeStart, rawEnd: rawOffset + closeEnd},
+				)
+				i = closeEnd
+				plainByteStart = i
+				continue
+			}
+		}
+
+		// * italic (single, not part of **)
+		if raw[i] == '*' && (i+1 >= len(raw) || raw[i+1] != '*') {
+			closeIdx := strings.Index(raw[i+1:], "*")
+			if closeIdx >= 0 {
+				closePos := i + 1 + closeIdx
+				// Ensure closing * is not part of **
+				if closePos+1 >= len(raw) || raw[closePos+1] != '*' {
+					flushPlain()
+					openEnd := i + 1
+					closeEnd := closePos + 1
+					spans = append(spans,
+						textSpan{text: "*", kind: spanItalicMarker, rawStart: rawOffset + i, rawEnd: rawOffset + openEnd},
+						textSpan{text: raw[openEnd:closePos], kind: spanItalic, rawStart: rawOffset + openEnd, rawEnd: rawOffset + closePos},
+						textSpan{text: "*", kind: spanItalicMarker, rawStart: rawOffset + closePos, rawEnd: rawOffset + closeEnd},
+					)
+					i = closeEnd
+					plainByteStart = i
+					continue
+				}
+			}
+		}
+
+		// _ italic
+		if raw[i] == '_' {
+			closeIdx := strings.Index(raw[i+1:], "_")
+			if closeIdx >= 0 {
+				flushPlain()
+				openEnd := i + 1
+				closeStart := openEnd + closeIdx
+				closeEnd := closeStart + 1
+				spans = append(spans,
+					textSpan{text: "_", kind: spanItalicMarker, rawStart: rawOffset + i, rawEnd: rawOffset + openEnd},
+					textSpan{text: raw[openEnd:closeStart], kind: spanItalic, rawStart: rawOffset + openEnd, rawEnd: rawOffset + closeStart},
+					textSpan{text: "_", kind: spanItalicMarker, rawStart: rawOffset + closeStart, rawEnd: rawOffset + closeEnd},
+				)
+				i = closeEnd
+				plainByteStart = i
+				continue
+			}
+		}
+
+		// ` inline code
+		if raw[i] == '`' {
+			closeIdx := strings.Index(raw[i+1:], "`")
+			if closeIdx >= 0 {
+				flushPlain()
+				openEnd := i + 1
+				closeStart := openEnd + closeIdx
+				closeEnd := closeStart + 1
+				spans = append(spans,
+					textSpan{text: "`", kind: spanCodeMarker, rawStart: rawOffset + i, rawEnd: rawOffset + openEnd},
+					textSpan{text: raw[openEnd:closeStart], kind: spanCode, rawStart: rawOffset + openEnd, rawEnd: rawOffset + closeStart},
+					textSpan{text: "`", kind: spanCodeMarker, rawStart: rawOffset + closeStart, rawEnd: rawOffset + closeEnd},
+				)
+				i = closeEnd
+				plainByteStart = i
+				continue
+			}
+		}
+
+		// Advance one rune
+		_, size := utf8.DecodeRuneInString(raw[i:])
+		i += size
+	}
+
+	// Flush remaining plain text
+	if plainByteStart < len(raw) {
+		spans = append(spans, textSpan{
+			text:     raw[plainByteStart:],
+			kind:     spanText,
+			rawStart: rawOffset + plainByteStart,
+			rawEnd:   rawOffset + len(raw),
+		})
+	}
+
+	return spans
+}
+
+// injectCursor injects cursor styling into spans at the cursor position.
+// cursorCol is a rune index into sourceLine.
+func injectCursor(spans []textSpan, sourceLine string, cursorCol int) []textSpan {
+	runeCount := utf8.RuneCountInString(sourceLine)
+
+	// Cursor at or past EOL — add phantom cursor
+	if cursorCol >= runeCount {
+		result := make([]textSpan, len(spans)+1)
+		copy(result, spans)
+		result[len(spans)] = textSpan{text: " ", kind: spanCursorEOL}
+		return result
+	}
+
+	byteOffset := runeIndexToByteOffset(sourceLine, cursorCol)
+
+	var result []textSpan
+	injected := false
+
+	for _, span := range spans {
+		if injected || byteOffset < span.rawStart || byteOffset >= span.rawEnd {
+			result = append(result, span)
+			continue
+		}
+
+		injected = true
+
+		// Substituted markers have display text that differs from source
+		// (bullet "• " replacing "- ", blockquote "│ " replacing "> ")
+		isSubstituted := span.kind == spanBulletMarker || span.kind == spanBlockquoteMarker
+		if isSubstituted {
+			// Apply cursor styling to the whole substituted span
+			result = append(result, textSpan{text: span.text, kind: spanCursor, rawStart: span.rawStart, rawEnd: span.rawEnd})
+			continue
+		}
+
+		// Precise cursor injection — span text matches source bytes
+		spanByteOffset := byteOffset - span.rawStart
+		cursorRune, cursorSize := utf8.DecodeRuneInString(span.text[spanByteOffset:])
+
+		if spanByteOffset > 0 {
+			result = append(result, textSpan{
+				text:     span.text[:spanByteOffset],
+				kind:     span.kind,
+				rawStart: span.rawStart,
+				rawEnd:   span.rawStart + spanByteOffset,
+			})
+		}
+		result = append(result, textSpan{
+			text:     string(cursorRune),
+			kind:     spanCursor,
+			rawStart: span.rawStart + spanByteOffset,
+			rawEnd:   span.rawStart + spanByteOffset + cursorSize,
+		})
+		afterStart := spanByteOffset + cursorSize
+		if afterStart < len(span.text) {
+			result = append(result, textSpan{
+				text:     span.text[afterStart:],
+				kind:     span.kind,
+				rawStart: span.rawStart + afterStart,
+				rawEnd:   span.rawEnd,
+			})
+		}
+	}
+
+	if !injected {
+		// Cursor past end of all spans — add EOL cursor
+		result = append(result, textSpan{text: " ", kind: spanCursorEOL})
+	}
+
+	return result
+}
+
+// renderSpan maps a spanKind to a lipgloss-styled string.
+func renderSpan(span textSpan) string {
+	switch span.kind {
+	case spanH1Marker, spanH2Marker, spanH3Marker, spanH4Marker,
+		spanBoldMarker, spanItalicMarker, spanBoldItalicMarker, spanCodeMarker,
+		spanFenceMarker:
+		return mdMarkerStyle.Render(span.text)
+	case spanH1Content:
+		return mdH1Style.Render(span.text)
+	case spanH2Content:
+		return mdH2Style.Render(span.text)
+	case spanH3Content:
+		return mdH3Style.Render(span.text)
+	case spanH4Content:
+		return mdH4Style.Render(span.text)
+	case spanBold:
+		return mdBoldStyle.Render(span.text)
+	case spanItalic:
+		return mdItalicStyle.Render(span.text)
+	case spanBoldItalic:
+		return mdBoldItalicStyle.Render(span.text)
+	case spanCode:
+		return mdCodeStyle.Render(span.text)
+	case spanFenceContent:
+		return mdCodeBlockStyle.Render(span.text)
+	case spanBulletMarker:
+		return mdBulletStyle.Render(span.text)
+	case spanCheckboxOpen:
+		return mdCheckboxOpenStyle.Render(span.text)
+	case spanCheckboxDone:
+		return mdCheckboxDoneStyle.Render(span.text)
+	case spanCheckboxOpenContent:
+		return mdCheckboxOpenContentStyle.Render(span.text)
+	case spanCheckboxDoneContent:
+		return mdCheckboxDoneContentStyle.Render(span.text)
+	case spanOrderedMarker:
+		return mdOrderedStyle.Render(span.text)
+	case spanBlockquoteMarker:
+		return mdBlockquoteStyle.Render(span.text)
+	case spanBlockquoteContent:
+		return lipgloss.NewStyle().Foreground(colorMuted).Render(span.text)
+	case spanHRule:
+		return mdHRuleStyle.Render(span.text)
+	case spanCursor, spanCursorEOL:
+		return mdCursorStyle.Render(span.text)
+	default:
+		return span.text
+	}
+}
+
+// renderLine concatenates spans and pads/truncates to exact width.
+func renderLine(spans []textSpan, width int) string {
+	var sb strings.Builder
+	for _, span := range spans {
+		sb.WriteString(renderSpan(span))
+	}
+	assembled := sb.String()
+
+	visWidth := lipgloss.Width(assembled)
+	if visWidth < width {
+		assembled += strings.Repeat(" ", width-visWidth)
+	} else if visWidth > width {
+		assembled = lipgloss.NewStyle().MaxWidth(width).Render(assembled)
+	}
+	return assembled
+}
+
+// isHorizontalRule returns true if trimmed is 3+ of the same char (-, *, _).
+func isHorizontalRule(trimmed string) bool {
+	if len(trimmed) < 3 {
+		return false
+	}
+	first := rune(trimmed[0])
+	if first != '-' && first != '*' && first != '_' {
+		return false
+	}
+	for _, c := range trimmed {
+		if c != first {
+			return false
+		}
+	}
+	return true
+}
+
+// runeIndexToByteOffset converts a rune index to a byte offset in s.
+func runeIndexToByteOffset(s string, runeIdx int) int {
+	byteOffset := 0
+	for i := 0; i < runeIdx && byteOffset < len(s); i++ {
+		_, size := utf8.DecodeRuneInString(s[byteOffset:])
+		byteOffset += size
+	}
+	return byteOffset
+}
