@@ -418,10 +418,13 @@ func (e *Editor) outdentLine(spaces int) {
 }
 
 // repositionCursor moves the cursor to the given row and column after a SetValue call
-// (which resets cursor to the beginning).
+// (which resets cursor to the beginning). We loop until Line() reaches the target
+// rather than calling CursorDown a fixed number of times, because CursorDown moves
+// by visual (soft-wrapped) rows, not logical lines.
 func repositionCursor(ta *textarea.Model, row, col int) {
 	ta.MoveToBegin()
-	for i := 0; i < row; i++ {
+	target := min(row, ta.LineCount()-1)
+	for ta.Line() < target {
 		ta.CursorDown()
 	}
 	ta.SetCursorColumn(col)
