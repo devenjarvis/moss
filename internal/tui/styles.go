@@ -111,4 +111,10 @@ var (
 
 	// Cursor
 	mdCursorStyle = lipgloss.NewStyle().Reverse(true)
+
+	// Checkbox styles
+	mdCheckboxOpenStyle        = lipgloss.NewStyle().Foreground(colorWarning)
+	mdCheckboxDoneStyle        = lipgloss.NewStyle().Foreground(colorAccent)
+	mdCheckboxOpenContentStyle = lipgloss.NewStyle().Foreground(colorFg)
+	mdCheckboxDoneContentStyle = lipgloss.NewStyle().Foreground(colorAccent).Faint(true)
 )
