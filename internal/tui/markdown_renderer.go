@@ -356,7 +356,8 @@ func injectCursor(spans []textSpan, sourceLine string, cursorCol int) []textSpan
 
 		// Substituted markers have display text that differs from source
 		// (bullet "• " replacing "- ", blockquote "│ " replacing "> ")
-		isSubstituted := span.kind == spanBulletMarker || span.kind == spanBlockquoteMarker
+		isSubstituted := span.kind == spanBulletMarker || span.kind == spanBlockquoteMarker ||
+			span.kind == spanCheckboxOpen || span.kind == spanCheckboxDone
 		if isSubstituted {
 			// Apply cursor styling to the whole substituted span
 			result = append(result, textSpan{text: span.text, kind: spanCursor, rawStart: span.rawStart, rawEnd: span.rawEnd})

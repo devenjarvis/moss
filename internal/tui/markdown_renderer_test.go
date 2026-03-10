@@ -504,3 +504,28 @@ func stripANSI(s string) string {
 	}
 	return result.String()
 }
+
+func TestInjectCursor_CheckboxMarker(t *testing.T) {
+	// Cursor anywhere within the "- [ ] " prefix (bytes 0-5) should apply
+	// cursor styling to the whole substituted marker, not slice mid-rune.
+	sourceLine := "- [ ] task"
+	spans, _ := tokenizeLine(sourceLine, false)
+
+	for col := 0; col <= 5; col++ {
+		result := injectCursor(spans, sourceLine, col)
+		var foundCursor bool
+		for _, s := range result {
+			if s.kind == spanCursor {
+				foundCursor = true
+				// The cursor span text should be the full "☐ " display text,
+				// not a partial byte slice.
+				if s.text != "☐ " {
+					t.Errorf("col %d: cursor span text = %q, want %q", col, s.text, "☐ ")
+				}
+			}
+		}
+		if !foundCursor {
+			t.Errorf("col %d: expected spanCursor in result", col)
+		}
+	}
+}
