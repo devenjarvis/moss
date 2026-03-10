@@ -659,9 +659,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusMsg = fmt.Sprintf("Error: %v", err)
 			return m, clearStatusAfter(5 * time.Second)
 		}
-		previewW := m.previewWidth()
+		editorW := m.width
 		contentH := m.height - 4
-		m.editor = NewEditor(parsed, m.database, previewW-4, contentH-2, autocorrect.New(m.cfg.AutocorrectEnabled()))
+		m.editor = NewEditor(parsed, m.database, editorW-4, contentH-2, autocorrect.New(m.cfg.AutocorrectEnabled()))
 		m.editingPath = msg.path
 		m.mode = modeEdit
 		m.activePane = panePreview
@@ -1314,7 +1314,7 @@ func (m *Model) updateLayout() {
 	}
 
 	if m.mode == modeEdit {
-		m.editor.SetSize(previewWidth-4, contentHeight-2)
+		m.editor.SetSize(m.width-4, contentHeight-2)
 	}
 }
 
@@ -1375,21 +1375,28 @@ func (m Model) View() tea.View {
 		return v
 	}
 
-	listW := m.listWidth()
-	previewW := m.previewWidth()
 	contentHeight := m.height - 2 // status bar
 
-	// Render panes
-	listPane := m.renderListPane(listW, contentHeight)
-	previewPane := m.renderPreviewPane(previewW, contentHeight)
-
 	var body string
-	if m.chatVisible {
-		chatW := m.chatWidth()
-		chatPane := m.renderChatPane(chatW, contentHeight)
-		body = lipgloss.JoinHorizontal(lipgloss.Top, listPane, previewPane, chatPane)
+	if m.mode == modeEdit {
+		// Full-screen editor: hide list and chat panes
+		editorPane := m.renderPreviewPane(m.width, contentHeight)
+		body = editorPane
 	} else {
-		body = lipgloss.JoinHorizontal(lipgloss.Top, listPane, previewPane)
+		listW := m.listWidth()
+		previewW := m.previewWidth()
+
+		// Render panes
+		listPane := m.renderListPane(listW, contentHeight)
+		previewPane := m.renderPreviewPane(previewW, contentHeight)
+
+		if m.chatVisible {
+			chatW := m.chatWidth()
+			chatPane := m.renderChatPane(chatW, contentHeight)
+			body = lipgloss.JoinHorizontal(lipgloss.Top, listPane, previewPane, chatPane)
+		} else {
+			body = lipgloss.JoinHorizontal(lipgloss.Top, listPane, previewPane)
+		}
 	}
 
 	// Status bar
