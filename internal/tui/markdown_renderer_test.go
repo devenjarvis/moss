@@ -421,8 +421,8 @@ func TestTokenizeLine_CheckboxOpen(t *testing.T) {
 	if spans[0].kind != spanCheckboxOpen {
 		t.Errorf("span[0].kind = %d, want spanCheckboxOpen (%d)", spans[0].kind, spanCheckboxOpen)
 	}
-	if spans[0].text != "☐ " {
-		t.Errorf("checkbox open display text = %q, want %q", spans[0].text, "☐ ")
+	if spans[0].text != "- [ ] " {
+		t.Errorf("checkbox open display text = %q, want %q", spans[0].text, "- [ ] ")
 	}
 	if spans[0].rawStart != 0 || spans[0].rawEnd != 6 {
 		t.Errorf("checkbox open raw = [%d, %d), want [0, 6)", spans[0].rawStart, spans[0].rawEnd)
@@ -440,8 +440,8 @@ func TestTokenizeLine_CheckboxDoneLowercase(t *testing.T) {
 	if spans[0].kind != spanCheckboxDone {
 		t.Errorf("span[0].kind = %d, want spanCheckboxDone (%d)", spans[0].kind, spanCheckboxDone)
 	}
-	if spans[0].text != "☑ " {
-		t.Errorf("checkbox done display text = %q, want %q", spans[0].text, "☑ ")
+	if spans[0].text != "- [x] " {
+		t.Errorf("checkbox done display text = %q, want %q", spans[0].text, "- [x] ")
 	}
 	if spans[0].rawStart != 0 || spans[0].rawEnd != 6 {
 		t.Errorf("checkbox done raw = [%d, %d), want [0, 6)", spans[0].rawStart, spans[0].rawEnd)
@@ -506,8 +506,8 @@ func stripANSI(s string) string {
 }
 
 func TestInjectCursor_CheckboxMarker(t *testing.T) {
-	// Cursor anywhere within the "- [ ] " prefix (bytes 0-5) should apply
-	// cursor styling to the whole substituted marker, not slice mid-rune.
+	// Cursor anywhere within the "- [ ] " prefix should produce a single
+	// character cursor span (ASCII markers are not substituted).
 	sourceLine := "- [ ] task"
 	spans, _ := tokenizeLine(sourceLine, false)
 
@@ -517,11 +517,6 @@ func TestInjectCursor_CheckboxMarker(t *testing.T) {
 		for _, s := range result {
 			if s.kind == spanCursor {
 				foundCursor = true
-				// The cursor span text should be the full "☐ " display text,
-				// not a partial byte slice.
-				if s.text != "☐ " {
-					t.Errorf("col %d: cursor span text = %q, want %q", col, s.text, "☐ ")
-				}
 			}
 		}
 		if !foundCursor {

@@ -145,12 +145,12 @@ func tokenizeLine(line string, inFence bool) (spans []textSpan, togglesFence boo
 	if strings.HasPrefix(line, "- ") || strings.HasPrefix(line, "* ") {
 		rest := line[2:]
 		if strings.HasPrefix(rest, "[ ] ") {
-			marker := textSpan{text: "☐ ", kind: spanCheckboxOpen, rawStart: 0, rawEnd: 6}
+			marker := textSpan{text: line[:6], kind: spanCheckboxOpen, rawStart: 0, rawEnd: 6}
 			content := parseInlineWithDefaultKind(rest[4:], 6, spanCheckboxOpenContent)
 			return append([]textSpan{marker}, content...), false
 		}
 		if strings.HasPrefix(rest, "[x] ") || strings.HasPrefix(rest, "[X] ") {
-			marker := textSpan{text: "☑ ", kind: spanCheckboxDone, rawStart: 0, rawEnd: 6}
+			marker := textSpan{text: line[:6], kind: spanCheckboxDone, rawStart: 0, rawEnd: 6}
 			content := parseInlineWithDefaultKind(rest[4:], 6, spanCheckboxDoneContent)
 			return append([]textSpan{marker}, content...), false
 		}
@@ -356,8 +356,7 @@ func injectCursor(spans []textSpan, sourceLine string, cursorCol int) []textSpan
 
 		// Substituted markers have display text that differs from source
 		// (bullet "• " replacing "- ", blockquote "│ " replacing "> ")
-		isSubstituted := span.kind == spanBulletMarker || span.kind == spanBlockquoteMarker ||
-			span.kind == spanCheckboxOpen || span.kind == spanCheckboxDone
+		isSubstituted := span.kind == spanBulletMarker || span.kind == spanBlockquoteMarker
 		if isSubstituted {
 			// Apply cursor styling to the whole substituted span
 			result = append(result, textSpan{text: span.text, kind: spanCursor, rawStart: span.rawStart, rawEnd: span.rawEnd})
