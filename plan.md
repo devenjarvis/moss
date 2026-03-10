@@ -1,175 +1,159 @@
-# Moss Git Sync — Implementation Plan
+# Moss Sync — Implementation Plan
 
 ## Overview
 
-Add git-based syncing to Moss so notes stay in sync across 2 MacBooks and an iPhone (via Working Copy). The approach: auto-commit locally on every file change, explicit `moss sync` to push/pull with a remote.
+Sync notes across devices by letting users point `notes_dir` at any cloud-synced folder (iCloud Drive, Dropbox, Syncthing, Google Drive, OneDrive, etc.). Moss doesn't implement its own transport — it becomes a good citizen of whatever sync tool the user already has.
 
-The database (`moss.db`) is **never synced** — it's a local index rebuilt from files. Only the `~/moss/notes/` directory is tracked by git.
+On iPhone: use iCloud Drive + a free markdown editor like Paper.
 
----
-
-## Phase 1: Git wrapper package (`internal/git/git.go`)
-
-Thin wrapper around `os/exec` calls to the `git` CLI. No libraries — keep it lo-fi.
-
-**Functions:**
-
-- `IsRepo(dir string) bool` — Check if dir is a git repo (`git rev-parse --git-dir`)
-- `Init(dir string) error` — `git init` + create `.gitignore` (ignore `*.db`, `*.db-wal`, `*.db-shm`)
-- `AddAll(dir string) error` — `git add -A` (within notes dir only)
-- `Commit(dir string, message string) error` — `git commit -m message`; no-op if nothing to commit
-- `HasRemote(dir string) (bool, error)` — Check if `origin` remote exists
-- `AddRemote(dir string, url string) error` — `git remote add origin <url>`
-- `Pull(dir string) error` — `git pull origin <branch> --rebase` with conflict detection
-- `Push(dir string) error` — `git push -u origin <branch>`
-- `Status(dir string) (clean bool, err error)` — Any uncommitted changes?
-- `HasConflicts(dir string) ([]string, error)` — List files with merge conflicts
-- `CurrentBranch(dir string) string` — Get current branch name
-- `Log(dir string, n int) ([]string, error)` — Last n commit messages (for status display)
-
-All functions take `dir` as the working directory and shell out to `git -C <dir> ...`.
+The database (`moss.db`) is **never synced** — it's a local-only index rebuilt from files. Only the notes directory is synced by the external tool.
 
 ---
 
-## Phase 2: Auto-commit on file change
+## What needs to change
 
-Hook into the **existing `sync.Watcher`** to auto-commit when files change.
+### 1. Conflict file detection and resolution (`internal/sync/conflict.go`)
 
-**Changes to `internal/sync/sync.go`:**
+Cloud sync services create conflict files with predictable naming patterns when the same file is modified on two devices:
 
-- Add a `GitAutoCommit` option to the Watcher
-- After `handleWrite()` successfully indexes a note, call `git.AddAll()` + `git.Commit()` with an auto-generated message like `"update: <filename>"`
-- After handling a delete event, commit the deletion: `"delete: <filename>"`
-- After handling a rename, commit: `"rename: <old> → <new>"`
-- **Debounce commits**: Use a separate timer (e.g., 1 second after last change) to batch rapid edits into a single commit instead of committing every keystroke-save
-- Only auto-commit if the notes dir is a git repo (check once at watcher startup)
+| Service | Pattern |
+|---------|---------|
+| iCloud | `filename 2.md`, `filename 3.md` |
+| Dropbox | `filename (conflicted copy 2026-03-10).md` |
+| Syncthing | `filename.sync-conflict-20260310-123456.md` |
+| OneDrive | `filename-DEVICE.md` |
+| Google Drive | Creates separate versions, no filename change |
 
-**Commit message format:**
-```
-moss: update 2026-03-10-meeting-notes.md
-moss: delete 2026-03-08-old-note.md
-moss: add 2026-03-10-new-idea.md
+**New functions:**
+
+- `IsConflictFile(filename string) bool` — Match against known conflict patterns
+- `OriginalFilename(conflictFile string) string` — Extract the original filename from a conflict file
+- `DetectConflicts(notesDir string) []ConflictGroup` — Scan for conflict pairs/groups
+
+**`ConflictGroup` struct:**
+```go
+type ConflictGroup struct {
+    Original  string   // path to the original file
+    Conflicts []string // paths to conflict copies
+    Service   string   // detected sync service ("icloud", "dropbox", etc.)
+}
 ```
 
----
+### 2. Conflict resolution UI in TUI (`internal/tui/`)
 
-## Phase 3: Enhanced `moss sync` command
+When conflicts are detected (at startup or via watcher), surface them to the user.
 
-Expand `moss sync` to handle git operations. The current behavior (re-index files to DB) becomes a sub-step.
+**Approach:** Add a conflicts list/notification to the TUI.
 
-**New subcommands:**
+- On startup and when watcher detects a new conflict file, check for conflicts
+- Show a `[2 conflicts]` indicator in the status bar
+- Keybinding (e.g., `C`) opens a conflict resolution view:
+  - Shows the original and conflict files side by side (or sequentially in the preview pane)
+  - User picks: **Keep original**, **Keep conflict version**, or **Keep both** (rename conflict to a proper note)
+  - Resolving deletes the losing file and re-indexes
 
-```
-moss sync              Pull from remote, re-index DB, push local commits
-moss sync init         Initialize git repo in notes dir
-moss sync remote <url> Set the git remote URL
-moss sync status       Show sync status (ahead/behind, last sync time)
-```
+**Keep it simple for v1:** Just detect and surface conflicts. The user can also resolve manually by deleting the unwanted file — Moss doesn't need to force a workflow.
 
-**`moss sync` flow (the main command):**
+### 3. Watcher hardening (`internal/sync/sync.go`)
 
-1. Check notes dir is a git repo → error with hint to run `moss sync init` if not
-2. Check remote is configured → error with hint to run `moss sync remote <url>` if not
-3. `git add -A` + commit any uncommitted changes (safety net)
-4. `git pull --rebase origin main`
-   - If conflicts → run conflict resolution (Phase 4), then commit the resolution
-5. Re-index all notes to DB (`msync.SyncNotes()` — existing behavior)
-6. `git push origin main`
-7. Print summary: "Synced: 3 notes pulled, 2 notes pushed"
+The existing watcher works well for local edits but needs hardening for cloud sync edge cases:
 
-**`moss sync init` flow:**
+**a. Handle temporary/partial files:**
+- Cloud services often write `.tmp`, `.partial`, or `~filename` files during sync
+- Filter these out in `debounceEvent()` (currently only checks `.md` extension — this is already correct, but add explicit exclusion for patterns like `.md.icloud`, `.md.tmp`)
 
-1. `git init` in notes dir
-2. Create `.gitignore` with `*.db*` patterns
-3. Initial commit of all existing notes
-4. Print next steps: "Run `moss sync remote <url>` to set up remote"
+**b. Handle iCloud placeholder files:**
+- On macOS, iCloud creates `.icloud` placeholder files for files not downloaded locally (e.g., `.filename.md.icloud`)
+- These should be ignored by the watcher
+- Consider: should Moss trigger a download? (`brctl download <path>` on macOS) — probably not for v1, just ignore
 
-**`moss sync remote <url>` flow:**
+**c. Increase debounce for cloud sync:**
+- Cloud services can trigger multiple write events as they download/reconstruct a file
+- Consider making debounce configurable or increasing it slightly (200ms → 500ms) when the notes dir is on a cloud-synced volume
+- Add a config option: `sync_debounce_ms` (default 200, suggest 500 for cloud folders)
 
-1. Validate notes dir is a git repo
-2. `git remote add origin <url>` (or `set-url` if already exists)
-3. Print confirmation
+**d. Handle bulk file appearances:**
+- On first sync (or after being offline), many files may appear at once
+- The current watcher handles this fine (each file gets debounced individually), but ensure the DB upserts don't cause UI lag
+- The existing `SyncNotes()` full-scan at startup already handles this case
 
----
+### 4. `ListNotes` filtering (`internal/note/note.go`)
 
-## Phase 4: Conflict resolution
-
-Keep it simple. For markdown files, conflicts are rare (single user, different devices, forgot to sync).
-
-**Strategy: "last write wins" with backup**
-
-When `git pull --rebase` fails due to conflicts:
-
-1. For each conflicted file:
-   a. Copy the conflicted version to `<filename>.conflict.md` (so nothing is lost)
-   b. Accept the incoming (remote) version: `git checkout --theirs <file>`
-   c. The local version is preserved in the `.conflict.md` file
-2. `git add -A` + commit: `"moss: resolve conflicts (local copies saved as .conflict.md)"`
-3. Print to user: "Conflict in meeting-notes.md — remote version kept, your local version saved as meeting-notes.conflict.md"
-4. The user can manually reconcile later
-
-**Why "theirs wins":** If you forgot to sync before editing on another device, the remote version is the one you most recently worked on intentionally. The local stale version is the one you forgot about. Saving it as `.conflict.md` means nothing is lost.
-
----
-
-## Phase 5: Config changes (`internal/config/config.go`)
-
-Add git sync settings to the config struct:
+Update `ListNotes()` to skip conflict files and cloud sync artifacts:
 
 ```go
-type Config struct {
-    NotesDir    string `yaml:"notes_dir"`
-    DBPath      string `yaml:"db_path"`
-    Autocorrect *bool  `yaml:"autocorrect,omitempty"`
-    GitSync     *GitSyncConfig `yaml:"git_sync,omitempty"`
-}
-
-type GitSyncConfig struct {
-    Enabled    bool   `yaml:"enabled"`              // default: true if repo exists
-    AutoCommit bool   `yaml:"auto_commit"`           // default: true
-    Remote     string `yaml:"remote,omitempty"`       // e.g., "git@github.com:user/notes.git"
-    Branch     string `yaml:"branch,omitempty"`       // default: "main"
+func ListNotes(dir string) ([]string, error) {
+    // ... existing logic ...
+    for _, e := range entries {
+        if !e.IsDir() && strings.HasSuffix(e.Name(), ".md") {
+            if !IsCloudArtifact(e.Name()) {
+                paths = append(paths, filepath.Join(dir, e.Name()))
+            }
+        }
+    }
+    return paths, nil
 }
 ```
 
-Config is optional — sync works with sensible defaults. If the notes dir is a git repo, auto-commit is on. The remote can be set via `moss sync remote` or directly in config.yaml.
+`IsCloudArtifact` filters out:
+- `.filename.md.icloud` (iCloud placeholders)
+- Files matching known temp patterns
+
+Conflict files should **not** be filtered from `ListNotes` — they're real notes that need to be visible so the user can resolve them. But they should be **tagged** as conflicts in the UI.
+
+### 5. Config guidance (documentation only)
+
+No config changes needed for the sync feature itself. But document recommended setups:
+
+**iCloud Drive (macOS + iPhone):**
+```yaml
+notes_dir: ~/Library/Mobile Documents/com~apple~CloudDocs/moss/notes
+```
+
+**Dropbox:**
+```yaml
+notes_dir: ~/Dropbox/moss/notes
+```
+
+**Syncthing:**
+```yaml
+notes_dir: ~/Syncthing/moss/notes
+```
+
+The user just changes `notes_dir` in `~/moss/config.yaml`. That's it.
+
+### 6. `moss sync` command update (`cmd/moss/main.go`)
+
+The existing `moss sync` command (re-index files to DB) stays as-is. Add conflict detection to its output:
+
+```
+$ moss sync
+Synced 47 notes
+⚠ 2 conflicts detected:
+  meeting-notes.md ↔ meeting-notes 2.md (iCloud)
+  project-plan.md ↔ project-plan (conflicted copy 2026-03-10).md (Dropbox)
+```
 
 ---
 
-## Phase 6: TUI integration (`internal/tui/model.go`)
+## Implementation order
 
-Minimal TUI changes:
+1. **Conflict detection** (`internal/sync/conflict.go`) — Pure functions, easy to test
+2. **Watcher hardening** (`internal/sync/sync.go`) — Filter cloud artifacts, adjust debounce
+3. **ListNotes filtering** (`internal/note/note.go`) — Skip cloud placeholders
+4. **`moss sync` CLI output** (`cmd/moss/main.go`) — Surface conflicts in CLI
+5. **TUI conflict indicator + resolution** (`internal/tui/`) — UI for viewing and resolving conflicts
 
-- **Keybinding**: `Ctrl+S` (or `S` in normal mode) → trigger sync (pull + push)
-- **Status indicator**: Small text in the bottom bar showing sync state:
-  - `[synced]` — everything pushed, nothing pending
-  - `[3 pending]` — 3 local commits not yet pushed
-  - `[syncing...]` — sync in progress
-  - `[sync error]` — last sync failed (show message on hover/select)
-  - `[no remote]` — git repo exists but no remote configured
-  - ` ` (blank) — not a git repo, sync not configured
-- **Sync runs in a goroutine** — non-blocking, sends a tea.Msg when complete to update the status
-
----
-
-## Implementation Order
-
-1. **Phase 1**: `internal/git/git.go` — Foundation, can test independently
-2. **Phase 5**: Config changes — Need this before wiring things up
-3. **Phase 3**: `moss sync` CLI commands — Core sync flow, testable from command line
-4. **Phase 4**: Conflict resolution — Part of the sync flow
-5. **Phase 2**: Auto-commit in watcher — Depends on git package existing
-6. **Phase 6**: TUI integration — Last, depends on everything else
-
-Phases 1 + 5 can be done together as they're independent. Phase 3 + 4 are tightly coupled. Phase 2 and 6 each build on top.
+Phases 1-3 are small, independent changes. Phase 4 is a quick CLI tweak. Phase 5 is the most work but can be iterated on.
 
 ---
 
 ## What's NOT in scope
 
-- Syncing the database (it's a local index, rebuilt from files)
+- Building a sync transport/relay (user brings their own via iCloud, Dropbox, etc.)
+- Syncing the database (local index, rebuilt from files)
 - Syncing config.yaml (device-specific)
-- Branch management (single branch: main)
-- SSH key setup or git credential management (user's responsibility)
-- Encryption at rest (notes are plaintext, user manages access to remote)
-- Any cloud service integration
+- Git integration (not needed for the core sync use case)
+- Encryption (user's responsibility via their sync tool)
+- Auto-downloading iCloud placeholders (v1 just ignores them)
+- A Moss mobile app (use Paper, iA Writer, or any markdown editor on iPhone)
