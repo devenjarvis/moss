@@ -11,11 +11,11 @@ import (
 type spanKind int
 
 const (
-	spanText            spanKind = iota
-	spanH1Marker                 // "# " prefix — dimmed
-	spanH1Content                // heading text — purple bold
-	spanH2Marker                 // "## " prefix
-	spanH2Content                // cyan bold
+	spanText      spanKind = iota
+	spanH1Marker           // "# " prefix — dimmed
+	spanH1Content          // heading text — purple bold
+	spanH2Marker           // "## " prefix
+	spanH2Content          // cyan bold
 	spanH3Marker
 	spanH3Content // fg bold
 	spanH4Marker
@@ -30,15 +30,15 @@ const (
 	spanCode             // background highlight
 	spanBulletMarker     // "• " replacing "- " — accent color
 	spanBulletContent
-	spanOrderedMarker  // "1. " — accent color
+	spanOrderedMarker // "1. " — accent color
 	spanOrderedContent
-	spanBlockquoteMarker  // "│ " replacing "> " — purple
-	spanBlockquoteContent // muted fg
-	spanHRule             // whole line as styled rule
-	spanFenceMarker       // ``` line — dimmed
-	spanFenceContent      // lines inside fence — code bg
-	spanCursor            // character under cursor — reversed
-	spanCursorEOL         // phantom cursor at EOL — reversed space
+	spanBlockquoteMarker    // "│ " replacing "> " — purple
+	spanBlockquoteContent   // muted fg
+	spanHRule               // whole line as styled rule
+	spanFenceMarker         // ``` line — dimmed
+	spanFenceContent        // lines inside fence — code bg
+	spanCursor              // character under cursor — reversed
+	spanCursorEOL           // phantom cursor at EOL — reversed space
 	spanCheckboxOpen        // "☐ " replacing "- [ ] " — yellow
 	spanCheckboxDone        // "☑ " replacing "- [x] " — green
 	spanCheckboxOpenContent // task text — normal fg
