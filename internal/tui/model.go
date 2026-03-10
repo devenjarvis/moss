@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/glamour"
 
 	"github.com/devenjarvis/moss/internal/ai"
+	"github.com/devenjarvis/moss/internal/autocorrect"
 	"github.com/devenjarvis/moss/internal/config"
 	"github.com/devenjarvis/moss/internal/db"
 	"github.com/devenjarvis/moss/internal/note"
@@ -660,7 +661,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		previewW := m.previewWidth()
 		contentH := m.height - 4
-		m.editor = NewEditor(parsed, m.database, previewW-4, contentH-2)
+		m.editor = NewEditor(parsed, m.database, previewW-4, contentH-2, autocorrect.New(m.cfg.AutocorrectEnabled()))
 		m.editingPath = msg.path
 		m.mode = modeEdit
 		m.activePane = panePreview
@@ -1133,7 +1134,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			previewW := m.previewWidth()
 			contentH := m.height - 4
-			m.editor = NewEditor(parsed, m.database, previewW-4, contentH-2)
+			m.editor = NewEditor(parsed, m.database, previewW-4, contentH-2, autocorrect.New(m.cfg.AutocorrectEnabled()))
 			m.editingPath = n.FilePath
 			m.mode = modeEdit
 			m.activePane = panePreview
