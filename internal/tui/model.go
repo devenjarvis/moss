@@ -12,6 +12,7 @@ import (
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/glamour"
 
 	"github.com/devenjarvis/moss/internal/ai"
@@ -1225,6 +1226,18 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.todoCursor = 0
 		m.todoOffset = 0
 		return m, loadTodos(m.database, m.todoFilter)
+
+	case "y":
+		if len(m.filteredNotes) > 0 && m.listCursor < len(m.filteredNotes) {
+			n := m.filteredNotes[m.listCursor]
+			if err := clipboard.WriteAll(n.Body); err != nil {
+				m.statusMsg = fmt.Sprintf("Copy failed: %v", err)
+			} else {
+				m.statusMsg = fmt.Sprintf("Copied \"%s\" to clipboard", n.Title)
+			}
+			return m, clearStatusAfter(3 * time.Second)
+		}
+		return m, nil
 	}
 
 	return m, nil
@@ -1799,6 +1812,7 @@ func (m Model) helpView() string {
   │    o             Cycle sort order   │
   │    c             Chat with AI       │
   │    s             Sync & re-index    │
+  │    y             Copy note text     │
   │    T             Todos view         │
   │                                     │
   │  Search Syntax                      │
