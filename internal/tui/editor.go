@@ -52,6 +52,7 @@ type Editor struct {
 	saved    bool
 	lastEdit time.Time
 	tickID   int
+	topLine  int // first visible logical line for markdown renderer
 }
 
 // NewEditor creates a new editor for the given note.
@@ -216,7 +217,7 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd, bool) {
 }
 
 // View renders the editor.
-func (e Editor) View(width, height int) string {
+func (e *Editor) View(width, height int) string {
 	// Header: frontmatter fields (2 rows)
 	titleLabel := editorLabelStyle.Render("title: ")
 	tagsLabel := editorLabelStyle.Render("tags: ")
@@ -248,10 +249,27 @@ func (e Editor) View(width, height int) string {
 	if bodyHeight < 3 {
 		bodyHeight = 3
 	}
-	e.body.SetHeight(bodyHeight)
 	e.body.SetWidth(width - 4)
 
-	return lipgloss.JoinVertical(lipgloss.Left, header, e.body.View(), status)
+	// Scroll tracking: keep cursor in view
+	curLine := e.body.Line()
+	if curLine < e.topLine {
+		e.topLine = curLine
+	}
+	if curLine >= e.topLine+bodyHeight {
+		e.topLine = curLine - bodyHeight + 1
+	}
+
+	bodyStr := renderMarkdownBody(
+		e.body.Value(),
+		e.body.Line(),
+		e.body.Column(),
+		e.focus == editorFocusBody,
+		width-4,
+		bodyHeight,
+		e.topLine,
+	)
+	return lipgloss.JoinVertical(lipgloss.Left, header, bodyStr, status)
 }
 
 // SetSize updates the editor dimensions.

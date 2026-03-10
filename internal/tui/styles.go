@@ -84,4 +84,31 @@ var (
 
 	editorSavedStyle = lipgloss.NewStyle().
 				Foreground(colorAccent)
+
+	// Markdown heading styles
+	mdH1Style = lipgloss.NewStyle().Bold(true).Foreground(colorPrimary)
+	mdH2Style = lipgloss.NewStyle().Bold(true).Foreground(colorSecondary)
+	mdH3Style = lipgloss.NewStyle().Bold(true).Foreground(colorFg)
+	mdH4Style = lipgloss.NewStyle().Bold(true)
+
+	// Dimmed markers (**, *, `, #)
+	mdMarkerStyle = lipgloss.NewStyle().Foreground(colorMuted).Faint(true)
+
+	// Inline styles
+	mdBoldStyle       = lipgloss.NewStyle().Bold(true)
+	mdItalicStyle     = lipgloss.NewStyle().Italic(true)
+	mdBoldItalicStyle = lipgloss.NewStyle().Bold(true).Italic(true)
+
+	// Code styles
+	mdCodeStyle      = lipgloss.NewStyle().Background(lipgloss.Color("#313244")).Foreground(colorWarning)
+	mdCodeBlockStyle = lipgloss.NewStyle().Background(lipgloss.Color("#1E1E2E")).Foreground(colorFg)
+
+	// List and structure
+	mdBulletStyle     = lipgloss.NewStyle().Foreground(colorAccent)
+	mdOrderedStyle    = lipgloss.NewStyle().Foreground(colorAccent)
+	mdBlockquoteStyle = lipgloss.NewStyle().Foreground(colorPrimary)
+	mdHRuleStyle      = lipgloss.NewStyle().Foreground(colorMuted)
+
+	// Cursor
+	mdCursorStyle = lipgloss.NewStyle().Reverse(true)
 )
