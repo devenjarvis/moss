@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -146,6 +147,104 @@ func TestTaskTypes(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Error("timed out waiting for result")
+	}
+}
+
+func TestEnhanceResultJSON(t *testing.T) {
+	// Verify the EnhanceResult struct marshals/unmarshals correctly
+	input := `{"corrected_body": "Hello world.", "thoughts": "Consider adding more detail."}`
+	var result EnhanceResult
+	if err := json.Unmarshal([]byte(input), &result); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if result.CorrectedBody != "Hello world." {
+		t.Errorf("CorrectedBody = %q, want %q", result.CorrectedBody, "Hello world.")
+	}
+	if result.Thoughts != "Consider adding more detail." {
+		t.Errorf("Thoughts = %q, want %q", result.Thoughts, "Consider adding more detail.")
+	}
+}
+
+func TestEnhanceResultJSON_Empty(t *testing.T) {
+	input := `{"corrected_body": "", "thoughts": ""}`
+	var result EnhanceResult
+	if err := json.Unmarshal([]byte(input), &result); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if result.CorrectedBody != "" {
+		t.Errorf("CorrectedBody = %q, want empty", result.CorrectedBody)
+	}
+	if result.Thoughts != "" {
+		t.Errorf("Thoughts = %q, want empty", result.Thoughts)
+	}
+}
+
+func TestWorkerProcessTask_EnhanceType(t *testing.T) {
+	// The enhance task type should be routed correctly in processTask.
+	// Since we can't call the actual CLI, we just verify it doesn't panic
+	// and returns an error (because claude CLI isn't available in tests).
+	w := NewWorker(10)
+	resultCh := make(chan Result, 1)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	w.processTask(ctx, Task{
+		Type:     "enhance",
+		Stdin:    "test body",
+		Prompt:   "test diff",
+		Model:    ModelHaiku,
+		ResultCh: resultCh,
+	})
+
+	select {
+	case result := <-resultCh:
+		// Should error because claude CLI isn't available
+		if result.Err == nil {
+			t.Log("enhance task succeeded (claude CLI available)")
+		}
+		// Either way, verify the result was sent back
+	case <-time.After(5 * time.Second):
+		t.Error("timed out waiting for enhance result")
+	}
+}
+
+func TestWorkerSubmit_EnhanceTask(t *testing.T) {
+	w := NewWorker(10)
+
+	resultCh := make(chan Result, 1)
+	w.Submit(Task{
+		Type:     "enhance",
+		Stdin:    "test body content",
+		Prompt:   "New content since last review.",
+		Model:    ModelHaiku,
+		ResultCh: resultCh,
+	})
+
+	if got := w.PendingCount(); got != 1 {
+		t.Errorf("PendingCount() = %d, want 1", got)
+	}
+}
+
+func TestResultThoughtsField(t *testing.T) {
+	// Verify the Thoughts field is available on Result
+	r := Result{
+		Output:   "corrected body",
+		Thoughts: "some thoughts",
+	}
+	if r.Thoughts != "some thoughts" {
+		t.Errorf("Thoughts = %q, want %q", r.Thoughts, "some thoughts")
+	}
+}
+
+func TestTaskStdinField(t *testing.T) {
+	// Verify the Stdin field is available on Task
+	task := Task{
+		Type:  "enhance",
+		Stdin: "note body via stdin",
+	}
+	if task.Stdin != "note body via stdin" {
+		t.Errorf("Stdin = %q, want %q", task.Stdin, "note body via stdin")
 	}
 }
 
