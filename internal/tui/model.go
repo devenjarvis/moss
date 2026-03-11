@@ -651,8 +651,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, clearStatusAfter(5 * time.Second)
 		}
 		editorW := m.width
-		contentH := m.height - 4
-		m.editor = NewEditor(parsed, m.database, editorW-4, contentH-2, autocorrect.New(m.cfg.AutocorrectEnabled()))
+		contentH := m.height - 3
+		m.editor = NewEditor(parsed, m.database, editorW-4, contentH-1, autocorrect.New(m.cfg.AutocorrectEnabled()))
 		m.editingPath = msg.path
 		m.mode = modeEdit
 		m.activePane = panePreview
@@ -761,6 +761,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.watcher.ResumeFile(m.editingPath)
 			}
 			m.mode = modeNormal
+			m.activePane = paneList
 			m.editingPath = ""
 			m.syncing = true
 			// Suppress input briefly after closing editor — the renderer
@@ -1124,8 +1125,8 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return m, clearStatusAfter(5 * time.Second)
 			}
 			previewW := m.previewWidth()
-			contentH := m.height - 4
-			m.editor = NewEditor(parsed, m.database, previewW-4, contentH-2, autocorrect.New(m.cfg.AutocorrectEnabled()))
+			contentH := m.height - 3
+			m.editor = NewEditor(parsed, m.database, previewW-4, contentH-1, autocorrect.New(m.cfg.AutocorrectEnabled()))
 			m.editingPath = n.FilePath
 			m.mode = modeEdit
 			m.activePane = panePreview
@@ -1252,8 +1253,8 @@ func (m *Model) ensureListVisible() {
 }
 
 func (m *Model) listHeight() int {
-	// Account for borders, title, status bar
-	h := m.height - 6
+	// Account for status bar (1), borders (2), title (1), input bar (1)
+	h := m.height - 5
 	if h < 1 {
 		return 1
 	}
@@ -1290,14 +1291,14 @@ func (m Model) previewForTodo(todo note.TodoItem) tea.Cmd {
 func (m *Model) updateLayout() {
 	previewWidth := m.previewWidth()
 	chatWidth := m.chatWidth()
-	contentHeight := m.height - 4 // status bar + borders
+	contentHeight := m.height - 3 // status bar (1) + pane borders (2)
 
 	m.preview.SetWidth(previewWidth - 4)
-	m.preview.SetHeight(contentHeight - 2)
+	m.preview.SetHeight(contentHeight - 1) // subtract title line
 
 	if m.chatVisible {
 		m.chatViewport.SetWidth(chatWidth - 4)
-		m.chatViewport.SetHeight(contentHeight - 6) // leave room for input
+		m.chatViewport.SetHeight(contentHeight - 4) // title (1) + input border area (3)
 	}
 
 	if m.previewContent != "" {
@@ -1309,7 +1310,7 @@ func (m *Model) updateLayout() {
 	}
 
 	if m.mode == modeEdit {
-		m.editor.SetSize(m.width-4, contentHeight-2)
+		m.editor.SetSize(m.width-4, contentHeight-1)
 	}
 }
 
@@ -1370,7 +1371,7 @@ func (m Model) View() tea.View {
 		return v
 	}
 
-	contentHeight := m.height - 2 // status bar
+	contentHeight := m.height - 1 // status bar (1 line)
 
 	var body string
 	if m.mode == modeEdit {
