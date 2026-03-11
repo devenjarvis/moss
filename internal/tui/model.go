@@ -111,6 +111,10 @@ type updateAvailableMsg struct {
 	version string
 }
 
+// frontmatterUpdatedMsg signals that a background frontmatter generation
+// completed and the note list should be refreshed.
+type frontmatterUpdatedMsg struct{}
+
 func clearStatusAfter(d time.Duration) tea.Cmd {
 	return tea.Tick(d, func(_ time.Time) tea.Msg {
 		return clearStatusMsg{}
@@ -193,6 +197,9 @@ type Model struct {
 	// Update notification
 	updateVersion string
 
+	// Background frontmatter generation notification channel
+	frontmatterCh chan struct{}
+
 	// Input suppression: ignore key events until this time.
 	// Prevents misparsed terminal query responses (OSC, CSI) from being
 	// dispatched as individual key events at startup and after mode transitions.
@@ -251,11 +258,27 @@ func New(cfg config.Config, database *db.DB, worker *ai.Worker) Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(
+	cmds := []tea.Cmd{
 		loadNotes(m.database),
 		textinput.Blink,
 		checkForUpdate(),
-	)
+	}
+	if m.frontmatterCh != nil {
+		cmds = append(cmds, waitForFrontmatter(m.frontmatterCh))
+	}
+	return tea.Batch(cmds...)
+}
+
+// waitForFrontmatter returns a tea.Cmd that blocks until a frontmatter
+// generation notification arrives on the channel.
+func waitForFrontmatter(ch chan struct{}) tea.Cmd {
+	return func() tea.Msg {
+		_, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return frontmatterUpdatedMsg{}
+	}
 }
 
 func checkForUpdate() tea.Cmd {
@@ -664,6 +687,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case updateAvailableMsg:
 		m.updateVersion = msg.version
 		return m, nil
+
+	case frontmatterUpdatedMsg:
+		// Background frontmatter generation completed — reload notes and
+		// continue listening for more updates.
+		var cmds []tea.Cmd
+		if m.frontmatterCh != nil {
+			cmds = append(cmds, waitForFrontmatter(m.frontmatterCh))
+		}
+		cmds = append(cmds, syncNotes(m.cfg.NotesDir, m.database))
+		return m, tea.Batch(cmds...)
 
 	case clearStatusMsg:
 		m.statusMsg = ""
@@ -1843,4 +1876,10 @@ func (m Model) helpView() string {
 // SetWatcher attaches a file watcher to the model.
 func (m *Model) SetWatcher(w *msync.Watcher) {
 	m.watcher = w
+}
+
+// SetFrontmatterCh sets the channel used to receive notifications when
+// background frontmatter generation completes for a note.
+func (m *Model) SetFrontmatterCh(ch chan struct{}) {
+	m.frontmatterCh = ch
 }

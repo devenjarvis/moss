@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/devenjarvis/moss/internal/note"
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -28,6 +29,7 @@ type Task struct {
 type Result struct {
 	Task   Task
 	Output string
+	Fields map[string]string // structured output for frontmatter tasks
 	Err    error
 }
 
@@ -77,18 +79,35 @@ Rules:
 		return nil, err
 	}
 
-	// Parse the output as simple key-value pairs
-	result := make(map[string]string)
-	for _, line := range strings.Split(output, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "---") {
-			continue
+	// Strip any surrounding --- fences the model may include
+	cleaned := output
+	if idx := strings.Index(cleaned, "---"); idx >= 0 {
+		cleaned = cleaned[idx+3:]
+		if end := strings.Index(cleaned, "---"); end >= 0 {
+			cleaned = cleaned[:end]
 		}
-		parts := strings.SplitN(line, ":", 2)
-		if len(parts) == 2 {
-			key := strings.TrimSpace(parts[0])
-			val := strings.TrimSpace(parts[1])
-			result[key] = val
+	}
+
+	// Parse output as YAML to correctly handle multi-line values (e.g. summaries)
+	result := make(map[string]string)
+	var parsed map[string]interface{}
+	if err := yaml.Unmarshal([]byte(cleaned), &parsed); err == nil && parsed != nil {
+		for k, v := range parsed {
+			result[k] = fmt.Sprintf("%v", v)
+		}
+	} else {
+		// Fallback: naive line-by-line parsing for non-YAML output
+		for _, line := range strings.Split(output, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "---") {
+				continue
+			}
+			parts := strings.SplitN(line, ":", 2)
+			if len(parts) == 2 {
+				key := strings.TrimSpace(parts[0])
+				val := strings.TrimSpace(parts[1])
+				result[key] = val
+			}
 		}
 	}
 
@@ -205,19 +224,12 @@ func (w *Worker) PendingCount() int {
 
 func (w *Worker) processTask(ctx context.Context, task Task) {
 	var output string
+	var fields map[string]string
 	var err error
 
 	switch task.Type {
 	case "frontmatter":
-		var fields map[string]string
 		fields, err = GenerateFrontmatter(ctx, task.Note)
-		if err == nil && fields != nil {
-			var parts []string
-			for k, v := range fields {
-				parts = append(parts, fmt.Sprintf("%s: %s", k, v))
-			}
-			output = strings.Join(parts, "\n")
-		}
 	case "ask":
 		output, err = Ask(ctx, task.Prompt, task.Note.Body)
 	case "generate":
@@ -225,6 +237,6 @@ func (w *Worker) processTask(ctx context.Context, task Task) {
 	}
 
 	if task.ResultCh != nil {
-		task.ResultCh <- Result{Task: task, Output: output, Err: err}
+		task.ResultCh <- Result{Task: task, Output: output, Fields: fields, Err: err}
 	}
 }

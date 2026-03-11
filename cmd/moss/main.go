@@ -102,10 +102,11 @@ func runTUI() {
 	defer worker.Stop()
 
 	// Queue frontmatter generation for notes with missing fields
-	queueFrontmatterTasks(cfg, database, worker)
+	frontmatterCh := queueFrontmatterTasks(cfg, database, worker)
 
 	// Create TUI model
 	model := tui.New(cfg, database, worker)
+	model.SetFrontmatterCh(frontmatterCh)
 
 	// File watcher
 	watcher, err := msync.NewWatcher(cfg.NotesDir, database, nil)
@@ -127,10 +128,15 @@ func runTUI() {
 	}
 }
 
-func queueFrontmatterTasks(cfg config.Config, database *db.DB, worker *ai.Worker) {
+// frontmatterDoneCh is a channel that receives a signal each time a background
+// frontmatter generation completes and writes a note to disk, so the TUI can
+// refresh its view.
+func queueFrontmatterTasks(cfg config.Config, database *db.DB, worker *ai.Worker) chan struct{} {
+	doneCh := make(chan struct{}, 100)
+
 	notes, err := database.AllNotes()
 	if err != nil {
-		return
+		return doneCh
 	}
 
 	// Collect notes that need frontmatter generation
@@ -146,7 +152,7 @@ func queueFrontmatterTasks(cfg config.Config, database *db.DB, worker *ai.Worker
 	}
 
 	if len(toProcess) == 0 {
-		return
+		return doneCh
 	}
 
 	// Create a shared result channel and submit tasks
@@ -164,18 +170,12 @@ func queueFrontmatterTasks(cfg config.Config, database *db.DB, worker *ai.Worker
 	go func() {
 		for i := 0; i < len(toProcess); i++ {
 			result := <-resultCh
-			if result.Err != nil || result.Output == "" {
+			if result.Err != nil || result.Fields == nil {
 				continue
 			}
 			n := result.Task.Note
 			// Apply generated fields only for fields that are still missing
-			for _, line := range strings.Split(result.Output, "\n") {
-				parts := strings.SplitN(line, ": ", 2)
-				if len(parts) != 2 {
-					continue
-				}
-				key := strings.TrimSpace(parts[0])
-				val := strings.TrimSpace(parts[1])
+			for key, val := range result.Fields {
 				switch key {
 				case "title":
 					if n.Title == "" {
@@ -214,8 +214,15 @@ func queueFrontmatterTasks(cfg config.Config, database *db.DB, worker *ai.Worker
 				continue
 			}
 			_ = database.UpsertNote(n)
+			// Notify TUI that a note was updated
+			select {
+			case doneCh <- struct{}{}:
+			default:
+			}
 		}
 	}()
+
+	return doneCh
 }
 
 func cmdNew(args []string) {
