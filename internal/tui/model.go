@@ -12,7 +12,6 @@ import (
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"github.com/charmbracelet/glamour"
 
 	"github.com/devenjarvis/moss/internal/ai"
 	"github.com/devenjarvis/moss/internal/autocorrect"
@@ -297,7 +296,8 @@ func syncNotes(notesDir string, database *db.DB) tea.Cmd {
 
 func renderPreview(n *note.Note) tea.Cmd {
 	return func() tea.Msg {
-		// Build display content
+		// Build display content as raw markdown — rendering happens in Update
+		// when we have access to the viewport width.
 		var sb strings.Builder
 
 		// Show frontmatter summary at top
@@ -320,20 +320,7 @@ func renderPreview(n *note.Note) tea.Cmd {
 		sb.WriteString("\n---\n\n")
 		sb.WriteString(n.Body)
 
-		renderer, err := glamour.NewTermRenderer(
-			glamour.WithStandardStyle("dark"),
-			glamour.WithWordWrap(80),
-		)
-		if err != nil {
-			return notePreviewMsg{content: sb.String()}
-		}
-
-		rendered, err := renderer.Render(sb.String())
-		if err != nil {
-			return notePreviewMsg{content: sb.String()}
-		}
-
-		return notePreviewMsg{content: rendered}
+		return notePreviewMsg{content: sb.String()}
 	}
 }
 
@@ -540,7 +527,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case notePreviewMsg:
 		m.previewContent = msg.content
-		m.preview.SetContent(msg.content)
+		width := m.preview.Width()
+		if width <= 0 {
+			width = 80
+		}
+		m.preview.SetContent(renderMarkdownPreview(msg.content, width))
 		m.preview.GotoTop()
 		return m, nil
 
@@ -1310,7 +1301,11 @@ func (m *Model) updateLayout() {
 	}
 
 	if m.previewContent != "" {
-		m.preview.SetContent(m.previewContent)
+		width := m.preview.Width()
+		if width <= 0 {
+			width = 80
+		}
+		m.preview.SetContent(renderMarkdownPreview(m.previewContent, width))
 	}
 
 	if m.mode == modeEdit {

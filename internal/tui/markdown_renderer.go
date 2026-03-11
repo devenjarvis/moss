@@ -496,6 +496,29 @@ func isHorizontalRule(trimmed string) bool {
 	return true
 }
 
+// renderMarkdownPreview renders markdown text with syntax highlighting for
+// read-only display (no cursor). Each line is padded/truncated to width.
+func renderMarkdownPreview(rawText string, width int) string {
+	lines := strings.Split(rawText, "\n")
+
+	inFence := false
+	rendered := make([]string, 0, len(lines))
+	for _, line := range lines {
+		spans, togglesFence := tokenizeLine(line, inFence)
+		if togglesFence {
+			inFence = !inFence
+		}
+
+		if len(spans) == 1 && spans[0].kind == spanHRule {
+			spans[0].text = strings.Repeat("─", width)
+		}
+
+		rendered = append(rendered, renderLine(spans, width))
+	}
+
+	return strings.Join(rendered, "\n")
+}
+
 // runeIndexToByteOffset converts a rune index to a byte offset in s.
 func runeIndexToByteOffset(s string, runeIdx int) int {
 	byteOffset := 0
