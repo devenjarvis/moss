@@ -485,6 +485,117 @@ func TestTokenizeLine_CheckboxContentInlineMarkdown(t *testing.T) {
 	}
 }
 
+// --- renderMarkdownPreview tests ---
+
+func TestRenderMarkdownPreview_PlainText(t *testing.T) {
+	output := renderMarkdownPreview("hello world", 20)
+	lines := strings.Split(output, "\n")
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 line, got %d", len(lines))
+	}
+	plain := strings.TrimSpace(stripANSI(lines[0]))
+	if plain != "hello world" {
+		t.Errorf("plain text = %q, want %q", plain, "hello world")
+	}
+}
+
+func TestRenderMarkdownPreview_LineCount(t *testing.T) {
+	output := renderMarkdownPreview("line1\nline2\nline3", 20)
+	lines := strings.Split(output, "\n")
+	if len(lines) != 3 {
+		t.Errorf("expected 3 lines, got %d", len(lines))
+	}
+}
+
+func TestRenderMarkdownPreview_HeadingStyled(t *testing.T) {
+	output := renderMarkdownPreview("# Title", 20)
+	// Should contain ANSI escape codes for styled heading
+	if !strings.Contains(output, "\x1b[") {
+		t.Error("expected ANSI styling for heading")
+	}
+	plain := strings.TrimSpace(stripANSI(output))
+	if plain != "# Title" {
+		t.Errorf("heading text = %q, want %q", plain, "# Title")
+	}
+}
+
+func TestRenderMarkdownPreview_FenceStateTracked(t *testing.T) {
+	input := "before\n```\ncode line\n```\nafter"
+	output := renderMarkdownPreview(input, 30)
+	lines := strings.Split(output, "\n")
+	if len(lines) != 5 {
+		t.Fatalf("expected 5 lines, got %d", len(lines))
+	}
+	// "code line" (line index 2) should be rendered as fence content
+	codePlain := strings.TrimSpace(stripANSI(lines[2]))
+	if codePlain != "code line" {
+		t.Errorf("fence content = %q, want %q", codePlain, "code line")
+	}
+	// "after" (line index 4) should be normal text, not fence content
+	afterPlain := strings.TrimSpace(stripANSI(lines[4]))
+	if afterPlain != "after" {
+		t.Errorf("post-fence text = %q, want %q", afterPlain, "after")
+	}
+}
+
+func TestRenderMarkdownPreview_HorizontalRuleExpanded(t *testing.T) {
+	output := renderMarkdownPreview("---", 15)
+	plain := stripANSI(output)
+	// HRule should be expanded to width with "─" characters
+	if !strings.Contains(plain, strings.Repeat("─", 15)) {
+		t.Errorf("hrule should be expanded to width 15, got %q", plain)
+	}
+}
+
+func TestRenderMarkdownPreview_WidthPadding(t *testing.T) {
+	output := renderMarkdownPreview("hi", 20)
+	width := lipgloss.Width(output)
+	if width != 20 {
+		t.Errorf("line width = %d, want 20", width)
+	}
+}
+
+func TestRenderMarkdownPreview_NoCursorInjected(t *testing.T) {
+	output := renderMarkdownPreview("hello", 20)
+	// Should not contain reverse video (cursor styling)
+	plain := stripANSI(output)
+	trimmed := strings.TrimSpace(plain)
+	if trimmed != "hello" {
+		t.Errorf("preview text = %q, want %q", trimmed, "hello")
+	}
+}
+
+func TestRenderMarkdownPreview_MultipleElements(t *testing.T) {
+	input := "# Title\n\n- item 1\n- item 2\n\n> quote\n\n1. ordered"
+	output := renderMarkdownPreview(input, 30)
+	lines := strings.Split(output, "\n")
+	if len(lines) != 8 {
+		t.Fatalf("expected 8 lines, got %d", len(lines))
+	}
+	// Verify bullet substitution
+	bulletLine := stripANSI(lines[2])
+	if !strings.Contains(bulletLine, "•") {
+		t.Errorf("bullet line should contain •, got %q", bulletLine)
+	}
+	// Verify blockquote substitution
+	quoteLine := stripANSI(lines[5])
+	if !strings.Contains(quoteLine, "│") {
+		t.Errorf("blockquote line should contain │, got %q", quoteLine)
+	}
+}
+
+func TestRenderMarkdownPreview_EmptyInput(t *testing.T) {
+	output := renderMarkdownPreview("", 20)
+	lines := strings.Split(output, "\n")
+	if len(lines) != 1 {
+		t.Errorf("empty input should produce 1 line, got %d", len(lines))
+	}
+	width := lipgloss.Width(output)
+	if width != 20 {
+		t.Errorf("empty line width = %d, want 20", width)
+	}
+}
+
 // stripANSI removes ANSI escape sequences for plain text comparison.
 func stripANSI(s string) string {
 	var result strings.Builder
