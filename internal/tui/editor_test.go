@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -760,6 +761,248 @@ func TestEditor_SmartEnter_MarksDirty(t *testing.T) {
 	e, _, _ = e.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if !e.dirty {
 		t.Error("should be dirty after smart enter")
+	}
+}
+
+// --- AI Enhancement tests ---
+
+func TestEditor_EnhanceMsg_AppliesCorrections(t *testing.T) {
+	e, _ := newTestEditor(t)
+	e.body.SetValue("Helo wrold")
+	e.bodyAtRequest = "Helo wrold" // simulate that request was sent with this body
+
+	e, cmd, shouldClose := e.Update(editorEnhanceMsg{
+		correctedBody: "Hello world",
+		thoughts:      "Consider expanding on your greeting.",
+	})
+
+	if shouldClose {
+		t.Error("enhance msg should not close editor")
+	}
+	if e.body.Value() != "Hello world" {
+		t.Errorf("body = %q, want %q", e.body.Value(), "Hello world")
+	}
+	if !e.canUndoEnhance {
+		t.Error("canUndoEnhance should be true after corrections applied")
+	}
+	if e.preCorrectBody != "Helo wrold" {
+		t.Errorf("preCorrectBody = %q, want %q", e.preCorrectBody, "Helo wrold")
+	}
+	if e.aiThoughts != "Consider expanding on your greeting." {
+		t.Errorf("aiThoughts = %q, want %q", e.aiThoughts, "Consider expanding on your greeting.")
+	}
+	if e.enhancePending {
+		t.Error("enhancePending should be false after receiving enhance msg")
+	}
+	if !e.dirty {
+		t.Error("should be dirty after corrections applied")
+	}
+	// Should return a tick command for auto-save
+	if cmd == nil {
+		t.Error("should return auto-save tick command after corrections")
+	}
+}
+
+func TestEditor_EnhanceMsg_SkipsIfBodyChanged(t *testing.T) {
+	e, _ := newTestEditor(t)
+	e.body.SetValue("Current body text")
+	e.bodyAtRequest = "Old body text" // body changed since request
+
+	e, _, _ = e.Update(editorEnhanceMsg{
+		correctedBody: "Old body corrected",
+		thoughts:      "Some thoughts.",
+	})
+
+	// Body should NOT be changed
+	if e.body.Value() != "Current body text" {
+		t.Errorf("body should not change, got %q", e.body.Value())
+	}
+	// But thoughts should still be updated
+	if e.aiThoughts != "Some thoughts." {
+		t.Errorf("aiThoughts = %q, want %q", e.aiThoughts, "Some thoughts.")
+	}
+	if e.canUndoEnhance {
+		t.Error("canUndoEnhance should be false when corrections not applied")
+	}
+	// lastReviewedBody should update to current body
+	if e.lastReviewedBody != "Current body text" {
+		t.Errorf("lastReviewedBody = %q, want %q", e.lastReviewedBody, "Current body text")
+	}
+}
+
+func TestEditor_EnhanceMsg_IgnoresErrors(t *testing.T) {
+	e, _ := newTestEditor(t)
+	e.enhancePending = true
+	originalBody := e.body.Value()
+
+	e, _, _ = e.Update(editorEnhanceMsg{
+		err: fmt.Errorf("claude not found"),
+	})
+
+	if e.body.Value() != originalBody {
+		t.Error("body should not change on error")
+	}
+	if e.enhancePending {
+		t.Error("enhancePending should be cleared on error")
+	}
+	if e.aiThoughts != "" {
+		t.Error("thoughts should not be set on error")
+	}
+}
+
+func TestEditor_EnhanceMsg_SkipsIdenticalBody(t *testing.T) {
+	e, _ := newTestEditor(t)
+	body := "Already correct text."
+	e.body.SetValue(body)
+	e.bodyAtRequest = body
+
+	e, cmd, _ := e.Update(editorEnhanceMsg{
+		correctedBody: body, // same as current
+		thoughts:      "Looks good!",
+	})
+
+	// Should NOT apply (body identical) but should update thoughts
+	if e.canUndoEnhance {
+		t.Error("should not set canUndoEnhance when body is identical")
+	}
+	if e.aiThoughts != "Looks good!" {
+		t.Errorf("aiThoughts = %q, want %q", e.aiThoughts, "Looks good!")
+	}
+	// No auto-save tick needed since body didn't change
+	if cmd != nil {
+		t.Error("should not return command when body is identical")
+	}
+}
+
+func TestEditor_CtrlZ_UndoEnhance(t *testing.T) {
+	e, _ := newTestEditor(t)
+	e.body.SetValue("Hello world")
+	e.preCorrectBody = "Helo wrold"
+	e.canUndoEnhance = true
+
+	e, cmd, shouldClose := e.Update(tea.KeyPressMsg{Code: 'z', Mod: tea.ModCtrl})
+
+	if shouldClose {
+		t.Error("ctrl+z should not close editor")
+	}
+	if e.body.Value() != "Helo wrold" {
+		t.Errorf("body = %q, want %q (restored pre-correction)", e.body.Value(), "Helo wrold")
+	}
+	if e.canUndoEnhance {
+		t.Error("canUndoEnhance should be false after undo")
+	}
+	if !e.dirty {
+		t.Error("should be dirty after undo")
+	}
+	if cmd == nil {
+		t.Error("should return auto-save tick command after undo")
+	}
+}
+
+func TestEditor_CtrlZ_NoOpWhenNoUndo(t *testing.T) {
+	e, _ := newTestEditor(t)
+	originalBody := e.body.Value()
+	e.canUndoEnhance = false
+
+	e, cmd, shouldClose := e.Update(tea.KeyPressMsg{Code: 'z', Mod: tea.ModCtrl})
+
+	if shouldClose {
+		t.Error("ctrl+z should not close editor")
+	}
+	if e.body.Value() != originalBody {
+		t.Error("body should not change when no undo available")
+	}
+	if cmd != nil {
+		t.Error("should not return command when no undo available")
+	}
+}
+
+func TestEditor_BodyValue_Accessor(t *testing.T) {
+	e, _ := newTestEditor(t)
+	e.body.SetValue("test body content")
+
+	if e.BodyValue() != "test body content" {
+		t.Errorf("BodyValue() = %q, want %q", e.BodyValue(), "test body content")
+	}
+}
+
+func TestEditor_LastReviewedBody_Accessor(t *testing.T) {
+	e, _ := newTestEditor(t)
+	e.lastReviewedBody = "reviewed body"
+
+	if e.LastReviewedBody() != "reviewed body" {
+		t.Errorf("LastReviewedBody() = %q, want %q", e.LastReviewedBody(), "reviewed body")
+	}
+}
+
+func TestEditor_EnhancePending_Accessor(t *testing.T) {
+	e, _ := newTestEditor(t)
+
+	if e.EnhancePending() {
+		t.Error("should not be pending initially")
+	}
+
+	e.SetEnhancePending(true)
+	if !e.EnhancePending() {
+		t.Error("should be pending after SetEnhancePending(true)")
+	}
+
+	e.SetEnhancePending(false)
+	if e.EnhancePending() {
+		t.Error("should not be pending after SetEnhancePending(false)")
+	}
+}
+
+func TestEditor_SetBodyAtRequest(t *testing.T) {
+	e, _ := newTestEditor(t)
+	e.SetBodyAtRequest("snapshot body")
+
+	if e.bodyAtRequest != "snapshot body" {
+		t.Errorf("bodyAtRequest = %q, want %q", e.bodyAtRequest, "snapshot body")
+	}
+}
+
+func TestEditor_View_ShowsThoughts(t *testing.T) {
+	e, _ := newTestEditor(t)
+	e.aiThoughts = "What about adding examples?"
+
+	view := e.View(80, 30)
+	if !strings.Contains(view, "AI thoughts") {
+		t.Error("view should contain 'AI thoughts' label when thoughts are set")
+	}
+	if !strings.Contains(view, "What about adding examples?") {
+		t.Error("view should contain the thoughts content")
+	}
+}
+
+func TestEditor_View_NoThoughtsWhenEmpty(t *testing.T) {
+	e, _ := newTestEditor(t)
+	e.aiThoughts = ""
+
+	view := e.View(80, 30)
+	if strings.Contains(view, "AI thoughts") {
+		t.Error("view should not contain 'AI thoughts' when thoughts are empty")
+	}
+}
+
+func TestEditor_View_ShowsUndoHint(t *testing.T) {
+	e, _ := newTestEditor(t)
+	e.aiThoughts = "Some thought"
+	e.canUndoEnhance = true
+
+	view := e.View(80, 30)
+	if !strings.Contains(view, "Ctrl+Z") {
+		t.Error("view should show Ctrl+Z hint when undo is available")
+	}
+}
+
+func TestEditor_View_ShowsAIReviewingStatus(t *testing.T) {
+	e, _ := newTestEditor(t)
+	e.enhancePending = true
+
+	view := e.View(80, 30)
+	if !strings.Contains(view, "AI reviewing") {
+		t.Error("view should show 'AI reviewing...' when enhance is pending")
 	}
 }
 

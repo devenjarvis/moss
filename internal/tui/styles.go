@@ -109,6 +109,16 @@ var (
 	mdBlockquoteStyle = lipgloss.NewStyle().Foreground(colorPrimary)
 	mdHRuleStyle      = lipgloss.NewStyle().Foreground(colorMuted)
 
+	// AI thoughts
+	aiThoughtsLabelStyle = lipgloss.NewStyle().
+				Foreground(colorSecondary).
+				Italic(true)
+
+	aiThoughtsStyle = lipgloss.NewStyle().
+			Foreground(colorMuted).
+			Italic(true).
+			PaddingLeft(2)
+
 	// Cursor
 	mdCursorStyle = lipgloss.NewStyle().Reverse(true)
 

@@ -2200,3 +2200,126 @@ func TestInputSuppression_ZeroTimeDisablesSuppression(t *testing.T) {
 		t.Errorf("mode = %d, want %d; zero suppression should not block keys", m.mode, modeGenerate)
 	}
 }
+
+// --- AI Enhancement Tests ---
+
+func newTestModelInEditMode(t *testing.T) Model {
+	t.Helper()
+	m := newTestModel(t)
+
+	// Create a real note file for the editor
+	content := "---\ntitle: Test\ndate: 2024-01-01\n---\n\nThis is a test note with enough words to pass the threshold."
+	path := filepath.Join(m.cfg.NotesDir, "2024-01-01-test.md")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := note.ParseFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m.editor = NewEditor(n, m.database, 76, 36, nil)
+	m.editingPath = path
+	m.mode = modeEdit
+	m.activePane = panePreview
+	return m
+}
+
+func TestMaybeEnhance_TriggersWhenBodyChanged(t *testing.T) {
+	m := newTestModelInEditMode(t)
+	m.editor.lastReviewedBody = "old body"
+
+	cmd := m.maybeEnhance()
+	if cmd == nil {
+		t.Error("maybeEnhance should return a command when body has changed")
+	}
+	if !m.editor.EnhancePending() {
+		t.Error("editor should be marked as enhance pending")
+	}
+}
+
+func TestMaybeEnhance_SkipsWhenNoChange(t *testing.T) {
+	m := newTestModelInEditMode(t)
+	currentBody := m.editor.BodyValue()
+	m.editor.lastReviewedBody = currentBody
+
+	cmd := m.maybeEnhance()
+	if cmd != nil {
+		t.Error("maybeEnhance should return nil when body hasn't changed")
+	}
+}
+
+func TestMaybeEnhance_SkipsWhenPending(t *testing.T) {
+	m := newTestModelInEditMode(t)
+	m.editor.lastReviewedBody = "old body"
+	m.editor.SetEnhancePending(true)
+
+	cmd := m.maybeEnhance()
+	if cmd != nil {
+		t.Error("maybeEnhance should return nil when enhance is already pending")
+	}
+}
+
+func TestMaybeEnhance_SkipsShortNotes(t *testing.T) {
+	m := newTestModelInEditMode(t)
+	m.editor.body.SetValue("hi") // too short
+	m.editor.lastReviewedBody = ""
+
+	cmd := m.maybeEnhance()
+	if cmd != nil {
+		t.Error("maybeEnhance should return nil for very short notes")
+	}
+}
+
+func TestMaybeEnhance_SkipsNilWorker(t *testing.T) {
+	m := newTestModelInEditMode(t)
+	m.worker = nil
+
+	cmd := m.maybeEnhance()
+	if cmd != nil {
+		t.Error("maybeEnhance should return nil with nil worker")
+	}
+}
+
+func TestModel_EditorEnhanceMsg_RoutedToEditor(t *testing.T) {
+	m := newTestModelInEditMode(t)
+	m.editor.enhancePending = true
+	m.editor.bodyAtRequest = m.editor.BodyValue()
+
+	model, _ := m.Update(editorEnhanceMsg{
+		correctedBody: "corrected content here",
+		thoughts:      "Nice note!",
+	})
+	m = model.(Model)
+
+	if m.editor.enhancePending {
+		t.Error("enhancePending should be false after handling enhance msg")
+	}
+	if m.editor.aiThoughts != "Nice note!" {
+		t.Errorf("aiThoughts = %q, want %q", m.editor.aiThoughts, "Nice note!")
+	}
+}
+
+func TestModel_EditorEnhanceMsg_IgnoredOutsideEditMode(t *testing.T) {
+	m := newTestModel(t)
+	m.mode = modeNormal
+
+	// Should not panic
+	model, _ := m.Update(editorEnhanceMsg{
+		correctedBody: "some body",
+		thoughts:      "some thoughts",
+	})
+	_ = model.(Model)
+}
+
+func TestModel_HelpView_ContainsCtrlZ(t *testing.T) {
+	m := newTestModel(t)
+	help := m.helpView()
+	if !strings.Contains(help, "Ctrl+Z") {
+		t.Error("help view should contain Ctrl+Z keybinding")
+	}
+	if !strings.Contains(help, "Undo AI fixes") {
+		t.Error("help view should describe Ctrl+Z as 'Undo AI fixes'")
+	}
+}

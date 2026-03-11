@@ -663,7 +663,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.editingPath = msg.newPath
 			}
+			// Trigger AI enhancement if body changed since last review
+			enhanceCmd := m.maybeEnhance()
+			if enhanceCmd != nil {
+				return m, tea.Batch(cmd, enhanceCmd)
+			}
 			return m, cmd
+		}
+		return m, nil
+
+	case editorEnhanceMsg:
+		if m.mode == modeEdit {
+			m.editor, _, _ = m.editor.Update(msg)
 		}
 		return m, nil
 
@@ -1275,6 +1286,56 @@ func (m *Model) filterByTag(tag string) tea.Cmd {
 	}
 }
 
+// maybeEnhance triggers an AI enhancement if the body has changed since the last review.
+func (m *Model) maybeEnhance() tea.Cmd {
+	if m.worker == nil {
+		return nil
+	}
+
+	currentBody := m.editor.BodyValue()
+	lastReviewed := m.editor.LastReviewedBody()
+
+	// Skip if no changes or already pending
+	if currentBody == lastReviewed || m.editor.EnhancePending() {
+		return nil
+	}
+
+	// Skip very short notes (less than a few words)
+	if len(strings.Fields(currentBody)) < 3 {
+		return nil
+	}
+
+	// Compute a simple diff description
+	diff := "New content since last review."
+	if lastReviewed != "" {
+		diff = fmt.Sprintf("Previous version had %d chars, now has %d chars.",
+			len(lastReviewed), len(currentBody))
+	}
+
+	m.editor.SetEnhancePending(true)
+	m.editor.SetBodyAtRequest(currentBody)
+
+	resultCh := make(chan ai.Result, 1)
+	m.worker.Submit(ai.Task{
+		Type:     "enhance",
+		Stdin:    currentBody,
+		Prompt:   diff,
+		Model:    ai.ModelHaiku,
+		ResultCh: resultCh,
+	})
+
+	return func() tea.Msg {
+		result := <-resultCh
+		if result.Err != nil {
+			return editorEnhanceMsg{err: result.Err}
+		}
+		return editorEnhanceMsg{
+			correctedBody: result.Output,
+			thoughts:      result.Thoughts,
+		}
+	}
+}
+
 func (m *Model) ensureListVisible() {
 	listHeight := m.listHeight()
 	if m.listCursor < m.listOffset {
@@ -1854,6 +1915,7 @@ func (m Model) helpView() string {
   │    Shift+Tab     Previous field     │
   │    Enter         Jump to body       │
   │    Ctrl+S        Save               │
+  │    Ctrl+Z        Undo AI fixes      │
   │    Esc           Save & close       │
   │                                     │
   │  List Indicators                    │
