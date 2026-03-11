@@ -3,6 +3,7 @@ package ai
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -11,6 +12,12 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// EnhanceResult holds the output of an AI note enhancement.
+type EnhanceResult struct {
+	CorrectedBody string `json:"corrected_body"`
+	Thoughts      string `json:"thoughts"`
+}
+
 const (
 	ModelHaiku  = "claude-haiku-4-5-20251001"
 	ModelSonnet = "" // empty string uses CLI default (Sonnet)
@@ -18,19 +25,21 @@ const (
 
 // Task represents an AI task to be processed by the background worker.
 type Task struct {
-	Type     string // "frontmatter", "summarize", "tags", "ask", "generate"
+	Type     string // "frontmatter", "summarize", "tags", "ask", "generate", "enhance"
 	Note     *note.Note
 	Prompt   string
+	Stdin    string // explicit stdin content (used by enhance)
 	Model    string
 	ResultCh chan<- Result
 }
 
 // Result is the output of an AI task.
 type Result struct {
-	Task   Task
-	Output string
-	Fields map[string]string // structured output for frontmatter tasks
-	Err    error
+	Task     Task
+	Output   string
+	Fields   map[string]string // structured output for frontmatter tasks
+	Thoughts string            // AI thoughts/questions (enhance tasks)
+	Err      error
 }
 
 // RunClaude executes a claude CLI subprocess with the given model and prompt,
@@ -166,6 +175,47 @@ Then write the note body in clean markdown.`, userPrompt)
 	return RunClaude(ctx, ModelSonnet, prompt, sourceNotes)
 }
 
+// Enhance sends a note body to Haiku for spelling/grammar corrections and
+// returns the corrected body along with brief thoughts/questions about the note.
+func Enhance(ctx context.Context, body string, diff string) (EnhanceResult, error) {
+	prompt := fmt.Sprintf(`You are an editing assistant for a note-taking app. You will receive a markdown note body via stdin.
+
+Your job:
+1. Fix ONLY spelling, grammar, punctuation, and formatting errors in the note body. Do NOT add new content, change the meaning, restructure sections, or remove anything. Preserve all markdown formatting exactly.
+2. Provide 1-3 brief thoughts or questions about the note that might prompt the writer to expand, clarify, or think deeper. These should be conversational and helpful.
+
+Recent changes (diff) for context:
+%s
+
+Respond with ONLY valid JSON in this exact format (no markdown fences):
+{"corrected_body": "<the full corrected note body>", "thoughts": "<your brief thoughts/questions, separated by newlines>"}`, diff)
+
+	output, err := RunClaude(ctx, ModelHaiku, prompt, body)
+	if err != nil {
+		return EnhanceResult{}, err
+	}
+
+	// Strip markdown code fences if present
+	output = strings.TrimSpace(output)
+	if strings.HasPrefix(output, "```") {
+		lines := strings.SplitN(output, "\n", 2)
+		if len(lines) == 2 {
+			output = lines[1]
+		}
+		if idx := strings.LastIndex(output, "```"); idx >= 0 {
+			output = output[:idx]
+		}
+		output = strings.TrimSpace(output)
+	}
+
+	var result EnhanceResult
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		return EnhanceResult{}, fmt.Errorf("enhance: failed to parse response: %w", err)
+	}
+
+	return result, nil
+}
+
 // Worker processes AI tasks from a channel in the background.
 type Worker struct {
 	tasks  chan Task
@@ -227,6 +277,8 @@ func (w *Worker) processTask(ctx context.Context, task Task) {
 	var fields map[string]string
 	var err error
 
+	var thoughts string
+
 	switch task.Type {
 	case "frontmatter":
 		fields, err = GenerateFrontmatter(ctx, task.Note)
@@ -234,9 +286,16 @@ func (w *Worker) processTask(ctx context.Context, task Task) {
 		output, err = Ask(ctx, task.Prompt, task.Note.Body)
 	case "generate":
 		output, err = GenerateNote(ctx, task.Prompt, task.Note.Body)
+	case "enhance":
+		var result EnhanceResult
+		result, err = Enhance(ctx, task.Stdin, task.Prompt)
+		if err == nil {
+			output = result.CorrectedBody
+			thoughts = result.Thoughts
+		}
 	}
 
 	if task.ResultCh != nil {
-		task.ResultCh <- Result{Task: task, Output: output, Fields: fields, Err: err}
+		task.ResultCh <- Result{Task: task, Output: output, Fields: fields, Thoughts: thoughts, Err: err}
 	}
 }

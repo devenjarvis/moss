@@ -39,6 +39,13 @@ type noteCreatedMsg struct {
 	path string
 }
 
+// Editor messages for AI enhancement
+type editorEnhanceMsg struct {
+	correctedBody string
+	thoughts      string
+	err           error
+}
+
 // Editor is the in-app note editor component.
 type Editor struct {
 	note     *note.Note
@@ -59,6 +66,14 @@ type Editor struct {
 
 	corrector      *autocorrect.Corrector
 	lastCorrection *lastCorrectionState // tracks last autocorrect for undo-on-backspace
+
+	// AI enhancement state
+	lastReviewedBody string // body at last AI review (to detect changes)
+	preCorrectBody   string // body before last auto-correction (for undo)
+	aiThoughts       string // current AI thoughts/questions
+	enhancePending   bool   // waiting for AI enhance response
+	canUndoEnhance   bool   // true after auto-correction applied
+	bodyAtRequest    string // body snapshot when enhance request was sent
 }
 
 // lastCorrectionState stores enough info to undo the most recent autocorrect.
@@ -139,6 +154,26 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd, bool) {
 			e.cycleFocus(-1)
 			return e, nil, false
 
+		case "ctrl+z":
+			// Undo AI enhancement corrections
+			if e.canUndoEnhance && e.preCorrectBody != "" {
+				row := e.body.Line()
+				col := e.body.Column()
+				e.body.SetValue(e.preCorrectBody)
+				repositionCursor(&e.body, row, col)
+				e.canUndoEnhance = false
+				e.dirty = true
+				e.saved = false
+				e.lastEdit = time.Now()
+				e.tickID++
+				tickID := e.tickID
+				tickCmd := tea.Tick(5*time.Second, func(_ time.Time) tea.Msg {
+					return editorAutoSaveTickMsg{id: tickID}
+				})
+				return e, tickCmd, false
+			}
+			return e, nil, false
+
 		case "ctrl+m":
 			if e.focus == editorFocusBody {
 				e.setFocus(editorFocusTitle)
@@ -177,7 +212,7 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd, bool) {
 				e.lastEdit = time.Now()
 				e.tickID++
 				tickID := e.tickID
-				tickCmd := tea.Tick(2*time.Second, func(_ time.Time) tea.Msg {
+				tickCmd := tea.Tick(5*time.Second, func(_ time.Time) tea.Msg {
 					return editorAutoSaveTickMsg{id: tickID}
 				})
 				return e, tickCmd, false
@@ -199,7 +234,7 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd, bool) {
 				e.lastEdit = time.Now()
 				e.tickID++
 				tickID := e.tickID
-				tickCmd := tea.Tick(2*time.Second, func(_ time.Time) tea.Msg {
+				tickCmd := tea.Tick(5*time.Second, func(_ time.Time) tea.Msg {
 					return editorAutoSaveTickMsg{id: tickID}
 				})
 				return e, tickCmd, false
@@ -238,7 +273,7 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd, bool) {
 		e.lastEdit = time.Now()
 		e.tickID++
 		tickID := e.tickID
-		tickCmd := tea.Tick(2*time.Second, func(_ time.Time) tea.Msg {
+		tickCmd := tea.Tick(5*time.Second, func(_ time.Time) tea.Msg {
 			return editorAutoSaveTickMsg{id: tickID}
 		})
 
@@ -261,6 +296,41 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd, bool) {
 				e.note.FilePath = msg.newPath
 			}
 		}
+		return e, nil, false
+
+	case editorEnhanceMsg:
+		e.enhancePending = false
+		if msg.err != nil {
+			// Silently ignore AI errors — don't disrupt editing
+			return e, nil, false
+		}
+
+		// Always update thoughts
+		e.aiThoughts = msg.thoughts
+
+		// Only apply corrections if body hasn't changed since we sent the request
+		currentBody := e.body.Value()
+		if currentBody == e.bodyAtRequest && msg.correctedBody != "" && msg.correctedBody != currentBody {
+			row := e.body.Line()
+			col := e.body.Column()
+			e.preCorrectBody = currentBody
+			e.body.SetValue(msg.correctedBody)
+			repositionCursor(&e.body, row, col)
+			e.canUndoEnhance = true
+			e.lastReviewedBody = msg.correctedBody
+			// Mark dirty so corrections get saved
+			e.dirty = true
+			e.saved = false
+			e.lastEdit = time.Now()
+			e.tickID++
+			tickID := e.tickID
+			tickCmd := tea.Tick(5*time.Second, func(_ time.Time) tea.Msg {
+				return editorAutoSaveTickMsg{id: tickID}
+			})
+			return e, tickCmd, false
+		}
+		// Body changed during AI processing — update reviewed marker to current
+		e.lastReviewedBody = currentBody
 		return e, nil, false
 	}
 
@@ -300,7 +370,19 @@ func (e *Editor) View(width, height int) string {
 	} else if e.saved {
 		status = editorSavedStyle.Render("✓ saved")
 	} else {
-		status = helpStyle.Render("Tab: indent  Shift+Tab: outdent  Ctrl+M: frontmatter  Esc: save & close  Ctrl+S: save  ⌘B/I: bold/italic  ⌘1-3: heading")
+		helpText := "Tab: indent  Shift+Tab: outdent  Ctrl+M: frontmatter  Esc: save & close  Ctrl+S: save  ⌘B/I: bold/italic  ⌘1-3: heading"
+		if e.enhancePending {
+			helpText = "AI reviewing...  " + helpText
+		}
+		status = helpStyle.Render(helpText)
+	}
+
+	// Thoughts section (if available)
+	var thoughtsStr string
+	thoughtsHeight := 0
+	if e.aiThoughts != "" {
+		thoughtsStr = e.renderThoughts(width - 4)
+		thoughtsHeight = lipgloss.Height(thoughtsStr)
 	}
 
 	// Body takes remaining space
@@ -308,7 +390,7 @@ func (e *Editor) View(width, height int) string {
 	headerHeight := lipgloss.Height(header)
 	statusHeight := 1
 
-	bodyHeight := height - headerHeight - statusHeight - 1
+	bodyHeight := height - headerHeight - statusHeight - thoughtsHeight - 1
 	if bodyHeight < 3 {
 		bodyHeight = 3
 	}
@@ -332,6 +414,10 @@ func (e *Editor) View(width, height int) string {
 		bodyHeight,
 		e.topLine,
 	)
+
+	if thoughtsStr != "" {
+		return lipgloss.JoinVertical(lipgloss.Left, header, bodyStr, thoughtsStr, status)
+	}
 	return lipgloss.JoinVertical(lipgloss.Left, header, bodyStr, status)
 }
 
@@ -577,7 +663,7 @@ func (e *Editor) markDirty() {
 func (e *Editor) scheduleAutoSave() tea.Cmd {
 	e.tickID++
 	tickID := e.tickID
-	return tea.Tick(2*time.Second, func(_ time.Time) tea.Msg {
+	return tea.Tick(5*time.Second, func(_ time.Time) tea.Msg {
 		return editorAutoSaveTickMsg{id: tickID}
 	})
 }
@@ -900,4 +986,47 @@ func (e *Editor) undoLastCorrection() bool {
 
 	e.lastCorrection = nil
 	return true
+}
+
+// renderThoughts renders the AI thoughts/questions section.
+func (e *Editor) renderThoughts(width int) string {
+	if e.aiThoughts == "" {
+		return ""
+	}
+
+	sep := editorSeparatorStyle.Render(strings.Repeat("─", width))
+	label := aiThoughtsLabelStyle.Render("AI thoughts")
+	content := aiThoughtsStyle.Render(e.aiThoughts)
+
+	undoHint := ""
+	if e.canUndoEnhance {
+		undoHint = "  " + helpStyle.Render("Ctrl+Z: undo corrections")
+	}
+
+	return lipgloss.JoinVertical(lipgloss.Left, sep, label+undoHint, content)
+}
+
+// BodyValue returns the current body text for external access.
+func (e *Editor) BodyValue() string {
+	return e.body.Value()
+}
+
+// LastReviewedBody returns the body text at the last AI review.
+func (e *Editor) LastReviewedBody() string {
+	return e.lastReviewedBody
+}
+
+// EnhancePending returns whether an AI enhance request is in flight.
+func (e *Editor) EnhancePending() bool {
+	return e.enhancePending
+}
+
+// SetEnhancePending marks that an enhance request has been submitted.
+func (e *Editor) SetEnhancePending(pending bool) {
+	e.enhancePending = pending
+}
+
+// SetBodyAtRequest stores the body snapshot when an enhance request was sent.
+func (e *Editor) SetBodyAtRequest(body string) {
+	e.bodyAtRequest = body
 }
