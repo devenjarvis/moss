@@ -497,26 +497,204 @@ func isHorizontalRule(trimmed string) bool {
 }
 
 // renderMarkdownPreview renders markdown text with syntax highlighting for
-// read-only display (no cursor). Each line is padded/truncated to width.
+// read-only display (no cursor). Long lines are word-wrapped to fit width.
 func renderMarkdownPreview(rawText string, width int) string {
 	lines := strings.Split(rawText, "\n")
 
 	inFence := false
 	rendered := make([]string, 0, len(lines))
 	for _, line := range lines {
-		spans, togglesFence := tokenizeLine(line, inFence)
-		if togglesFence {
-			inFence = !inFence
+		// Wrap long lines before tokenizing (skip fenced code blocks)
+		trimmed := strings.TrimSpace(line)
+		isFenceDelim := strings.HasPrefix(trimmed, "```")
+		wrappedLines := []string{line}
+		if !inFence && !isFenceDelim && width > 0 {
+			wrappedLines = wrapLine(line, width)
 		}
 
-		if len(spans) == 1 && spans[0].kind == spanHRule {
-			spans[0].text = strings.Repeat("─", width)
-		}
+		for _, wl := range wrappedLines {
+			spans, togglesFence := tokenizeLine(wl, inFence)
+			if togglesFence {
+				inFence = !inFence
+			}
 
-		rendered = append(rendered, renderLine(spans, width))
+			if len(spans) == 1 && spans[0].kind == spanHRule {
+				spans[0].text = strings.Repeat("─", width)
+			}
+
+			rendered = append(rendered, renderLine(spans, width))
+		}
 	}
 
 	return strings.Join(rendered, "\n")
+}
+
+// wrapLine wraps a single line to fit within width, preserving markdown
+// prefixes (blockquote, list markers, indentation) on continuation lines.
+func wrapLine(line string, width int) []string {
+	if width <= 0 || utf8.RuneCountInString(line) <= width {
+		return []string{line}
+	}
+
+	// Determine the markdown prefix and content
+	prefix, content := splitMarkdownPrefix(line)
+	prefixWidth := utf8.RuneCountInString(prefix)
+
+	// Build continuation prefix (spaces matching the prefix width)
+	contPrefix := strings.Repeat(" ", prefixWidth)
+
+	// Available width for content on each line
+	contentWidth := width - prefixWidth
+	if contentWidth < 10 {
+		// Too narrow to wrap meaningfully, just return as-is
+		return []string{line}
+	}
+
+	// Word-wrap the content
+	words := strings.Fields(content)
+	if len(words) == 0 {
+		return []string{line}
+	}
+
+	var result []string
+	currentLine := prefix
+	currentLen := prefixWidth
+
+	for _, word := range words {
+		wordLen := utf8.RuneCountInString(word)
+		if currentLen == prefixWidth {
+			// First word on the line
+			currentLine += word
+			currentLen += wordLen
+		} else if currentLen+1+wordLen <= width {
+			// Fits on current line
+			currentLine += " " + word
+			currentLen += 1 + wordLen
+		} else {
+			// Start a new line
+			result = append(result, currentLine)
+			currentLine = contPrefix + word
+			currentLen = prefixWidth + wordLen
+		}
+	}
+	if currentLine != "" {
+		result = append(result, currentLine)
+	}
+
+	if len(result) == 0 {
+		return []string{line}
+	}
+	return result
+}
+
+// splitMarkdownPrefix extracts the leading markdown prefix (blockquote,
+// list marker, heading, indentation) and returns (prefix, rest).
+func splitMarkdownPrefix(line string) (string, string) {
+	// Blockquote
+	if strings.HasPrefix(line, "> ") {
+		return "> ", line[2:]
+	}
+
+	// Heading — don't wrap headings with prefix, just use indentation
+	for _, h := range []string{"#### ", "### ", "## ", "# "} {
+		if strings.HasPrefix(line, h) {
+			return h, line[len(h):]
+		}
+	}
+
+	// Indented content
+	indent := len(line) - len(strings.TrimLeft(line, " \t"))
+	stripped := line[indent:]
+
+	// Checkbox lists
+	if strings.HasPrefix(stripped, "- [ ] ") || strings.HasPrefix(stripped, "- [x] ") || strings.HasPrefix(stripped, "- [X] ") {
+		pfx := line[:indent+6]
+		return pfx, stripped[6:]
+	}
+
+	// Unordered list
+	if strings.HasPrefix(stripped, "- ") || strings.HasPrefix(stripped, "* ") {
+		pfx := line[:indent+2]
+		return pfx, stripped[2:]
+	}
+
+	// Ordered list
+	if loc := orderedListRe.FindStringIndex(stripped); loc != nil {
+		pfxLen := indent + loc[1]
+		return line[:pfxLen], line[pfxLen:]
+	}
+
+	// Plain text — use leading whitespace as prefix
+	if indent > 0 {
+		return line[:indent], stripped
+	}
+
+	return "", line
+}
+
+// wrapText wraps plain text content to fit within width. The first line
+// starts after a label of labelWidth characters, continuation lines are
+// indented by that amount. Newlines in the input are preserved.
+func wrapText(text string, width, labelWidth int) string {
+	if width <= labelWidth {
+		return text
+	}
+
+	paragraphs := strings.Split(text, "\n")
+	var result []string
+
+	for pi, para := range paragraphs {
+		if para == "" {
+			result = append(result, "")
+			continue
+		}
+
+		words := strings.Fields(para)
+		if len(words) == 0 {
+			result = append(result, "")
+			continue
+		}
+
+		indent := strings.Repeat(" ", labelWidth)
+		// First paragraph's first line has less space (label already printed)
+		lineWidth := width
+		if pi == 0 {
+			lineWidth = width - labelWidth
+		}
+
+		var lines []string
+		currentLine := ""
+		currentLen := 0
+
+		for _, word := range words {
+			wordLen := utf8.RuneCountInString(word)
+			if currentLen == 0 {
+				currentLine = word
+				currentLen = wordLen
+			} else if currentLen+1+wordLen <= lineWidth {
+				currentLine += " " + word
+				currentLen += 1 + wordLen
+			} else {
+				lines = append(lines, currentLine)
+				currentLine = word
+				currentLen = wordLen
+				lineWidth = width - labelWidth // subsequent lines have full indent
+			}
+		}
+		if currentLine != "" {
+			lines = append(lines, currentLine)
+		}
+
+		for i, l := range lines {
+			if pi == 0 && i == 0 {
+				result = append(result, l) // first line, label already printed
+			} else {
+				result = append(result, indent+l)
+			}
+		}
+	}
+
+	return strings.Join(result, "\n")
 }
 
 // runeIndexToByteOffset converts a rune index to a byte offset in s.

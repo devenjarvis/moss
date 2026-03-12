@@ -1427,18 +1427,23 @@ func (m Model) chatWidth() int {
 }
 
 func (m *Model) updateChatViewport() {
+	width := m.chatViewport.Width()
+	if width <= 0 {
+		width = 40
+	}
+
 	var sb strings.Builder
 	for _, msg := range m.chatHistory {
 		if msg.role == "user" {
 			sb.WriteString(lipgloss.NewStyle().
 				Foreground(colorSecondary).Bold(true).
 				Render("You: "))
-			sb.WriteString(msg.content)
+			sb.WriteString(wrapText(msg.content, width, 6))
 		} else {
 			sb.WriteString(lipgloss.NewStyle().
 				Foreground(colorAccent).Bold(true).
 				Render("Moss: "))
-			sb.WriteString(msg.content)
+			sb.WriteString(wrapText(msg.content, width, 6))
 		}
 		sb.WriteString("\n\n")
 	}
