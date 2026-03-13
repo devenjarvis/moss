@@ -1953,6 +1953,7 @@ func (m Model) helpView() string {
   │    Enter         Jump to body       │
   │    Ctrl+S        Save               │
   │    Ctrl+Z        Undo AI fixes      │
+  │    Ctrl+Y        Redo AI fixes      │
   │    Esc           Save & close       │
   │                                     │
   │  List Indicators                    │

@@ -99,7 +99,10 @@ type Editor struct {
 	typewriterDone   bool  // true when fully revealed
 
 	// Correction summary
-	correctionSummary string // brief description of what AI changed
+	correctionSummary     string // brief description of what AI changed
+	redoCorrectedBody     string // stashed corrected body for redo after undo
+	redoCorrectionSummary string // stashed correction summary for redo
+	canRedoEnhance        bool   // true after undo, cleared on next edit
 
 	// Enhance debounce readiness flag (checked by model.go)
 	enhanceReady bool
@@ -183,14 +186,41 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd, bool) {
 			e.cycleFocus(-1)
 			return e, nil, false
 
+		case "ctrl+y":
+			// Redo AI enhancement corrections
+			if e.canRedoEnhance && e.redoCorrectedBody != "" {
+				row := e.body.Line()
+				col := e.body.Column()
+				e.preCorrectBody = e.body.Value()
+				e.body.SetValue(e.redoCorrectedBody)
+				repositionCursor(&e.body, row, col)
+				e.canUndoEnhance = true
+				e.canRedoEnhance = false
+				e.correctionSummary = e.redoCorrectionSummary
+				e.dirty = true
+				e.saved = false
+				e.lastEdit = time.Now()
+				e.tickID++
+				tickID := e.tickID
+				tickCmd := tea.Tick(5*time.Second, func(_ time.Time) tea.Msg {
+					return editorAutoSaveTickMsg{id: tickID}
+				})
+				return e, tickCmd, false
+			}
+			return e, nil, false
+
 		case "ctrl+z":
 			// Undo AI enhancement corrections
 			if e.canUndoEnhance && e.preCorrectBody != "" {
 				row := e.body.Line()
 				col := e.body.Column()
+				// Stash for redo
+				e.redoCorrectedBody = e.body.Value()
+				e.redoCorrectionSummary = e.correctionSummary
 				e.body.SetValue(e.preCorrectBody)
 				repositionCursor(&e.body, row, col)
 				e.canUndoEnhance = false
+				e.canRedoEnhance = true
 				e.correctionSummary = ""
 				e.dirty = true
 				e.saved = false
@@ -297,6 +327,9 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd, bool) {
 			e.lastCorrection = nil
 		}
 
+		// Clear redo state on new edits
+		e.canRedoEnhance = false
+
 		// Mark dirty and schedule auto-save + enhance debounce
 		e.dirty = true
 		e.saved = false
@@ -307,10 +340,10 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd, bool) {
 			return editorAutoSaveTickMsg{id: tickID}
 		})
 
-		// Schedule enhance debounce (1.5s after last keystroke)
+		// Schedule enhance debounce (800ms after last keystroke)
 		e.enhanceTickID++
 		enhanceID := e.enhanceTickID
-		enhanceCmd := tea.Tick(1500*time.Millisecond, func(_ time.Time) tea.Msg {
+		enhanceCmd := tea.Tick(800*time.Millisecond, func(_ time.Time) tea.Msg {
 			return editorEnhanceTickMsg{id: enhanceID}
 		})
 
@@ -1106,6 +1139,8 @@ func (e *Editor) renderThoughts(width int) string {
 			corrLine += "  " + helpStyle.Render("Ctrl+Z to undo")
 		}
 		sections = append(sections, corrLine)
+	} else if e.canRedoEnhance {
+		sections = append(sections, helpStyle.Render("Ctrl+Y to redo AI corrections"))
 	}
 
 	// Thoughts content with typewriter cursor
