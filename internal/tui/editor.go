@@ -94,9 +94,9 @@ type Editor struct {
 	spinnerTick  time.Time // last spinner update
 
 	// Typewriter effect
-	thoughtsTarget  string // full thoughts text to reveal
-	thoughtsRevealed int   // number of runes revealed so far
-	typewriterDone   bool  // true when fully revealed
+	thoughtsTarget   string // full thoughts text to reveal
+	thoughtsRevealed int    // number of runes revealed so far
+	typewriterDone   bool   // true when fully revealed
 
 	// Redo state
 	redoCorrectedBody string // stashed corrected body for redo after undo
@@ -1202,4 +1202,3 @@ func (e *Editor) StartSpinner() tea.Cmd {
 		return editorSpinnerTickMsg{}
 	})
 }
-
