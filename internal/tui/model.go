@@ -672,7 +672,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case editorEnhanceTickMsg:
+		if m.mode == modeEdit {
+			m.editor, _, _ = m.editor.Update(msg)
+			// Check if the debounce fired and we should try enhancement
+			if m.editor.EnhanceReady() {
+				enhanceCmd := m.maybeEnhance()
+				if enhanceCmd != nil {
+					return m, enhanceCmd
+				}
+			}
+		}
+		return m, nil
+
 	case editorEnhanceMsg:
+		if m.mode == modeEdit {
+			var cmd tea.Cmd
+			m.editor, cmd, _ = m.editor.Update(msg)
+			return m, cmd
+		}
+		return m, nil
+
+	case editorSpinnerTickMsg:
+		if m.mode == modeEdit {
+			m.editor, _, _ = m.editor.Update(msg)
+		}
+		return m, nil
+
+	case editorTypewriterTickMsg:
 		if m.mode == modeEdit {
 			m.editor, _, _ = m.editor.Update(msg)
 		}
@@ -1324,7 +1351,10 @@ func (m *Model) maybeEnhance() tea.Cmd {
 		ResultCh: resultCh,
 	})
 
-	return func() tea.Msg {
+	// Start spinner animation
+	spinnerCmd := m.editor.StartSpinner()
+
+	waitCmd := func() tea.Msg {
 		result := <-resultCh
 		if result.Err != nil {
 			return editorEnhanceMsg{err: result.Err}
@@ -1334,6 +1364,8 @@ func (m *Model) maybeEnhance() tea.Cmd {
 			thoughts:      result.Thoughts,
 		}
 	}
+
+	return tea.Batch(spinnerCmd, waitCmd)
 }
 
 func (m *Model) ensureListVisible() {

@@ -117,7 +117,17 @@ var (
 	aiThoughtsStyle = lipgloss.NewStyle().
 			Foreground(colorMuted).
 			Italic(true).
-			PaddingLeft(2)
+			PaddingLeft(1)
+
+	aiThoughtsBoxStyle = lipgloss.NewStyle().
+				BorderStyle(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color("#9333EA")). // vivid purple
+				PaddingLeft(1).
+				PaddingRight(1)
+
+	aiCorrectionStyle = lipgloss.NewStyle().
+				Foreground(colorAccent).
+				Bold(true)
 
 	// Cursor
 	mdCursorStyle = lipgloss.NewStyle().Reverse(true)

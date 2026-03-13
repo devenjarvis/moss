@@ -46,6 +46,17 @@ type editorEnhanceMsg struct {
 	err           error
 }
 
+// editorEnhanceTickMsg fires after a short typing pause to trigger AI enhancement.
+type editorEnhanceTickMsg struct {
+	id int // tick ID to match against current
+}
+
+// editorSpinnerTickMsg drives the spinner animation while AI is thinking.
+type editorSpinnerTickMsg struct{}
+
+// editorTypewriterTickMsg drives the typewriter reveal effect for AI thoughts.
+type editorTypewriterTickMsg struct{}
+
 // Editor is the in-app note editor component.
 type Editor struct {
 	note     *note.Note
@@ -74,6 +85,24 @@ type Editor struct {
 	enhancePending   bool   // waiting for AI enhance response
 	canUndoEnhance   bool   // true after auto-correction applied
 	bodyAtRequest    string // body snapshot when enhance request was sent
+
+	// Enhance debounce (separate from auto-save)
+	enhanceTickID int // tick ID for enhance debounce
+
+	// Spinner animation
+	spinnerFrame int       // current frame index
+	spinnerTick  time.Time // last spinner update
+
+	// Typewriter effect
+	thoughtsTarget  string // full thoughts text to reveal
+	thoughtsRevealed int   // number of runes revealed so far
+	typewriterDone   bool  // true when fully revealed
+
+	// Correction summary
+	correctionSummary string // brief description of what AI changed
+
+	// Enhance debounce readiness flag (checked by model.go)
+	enhanceReady bool
 }
 
 // lastCorrectionState stores enough info to undo the most recent autocorrect.
@@ -162,6 +191,7 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd, bool) {
 				e.body.SetValue(e.preCorrectBody)
 				repositionCursor(&e.body, row, col)
 				e.canUndoEnhance = false
+				e.correctionSummary = ""
 				e.dirty = true
 				e.saved = false
 				e.lastEdit = time.Now()
@@ -267,7 +297,7 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd, bool) {
 			e.lastCorrection = nil
 		}
 
-		// Mark dirty and schedule auto-save
+		// Mark dirty and schedule auto-save + enhance debounce
 		e.dirty = true
 		e.saved = false
 		e.lastEdit = time.Now()
@@ -277,7 +307,14 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd, bool) {
 			return editorAutoSaveTickMsg{id: tickID}
 		})
 
-		return e, tea.Batch(cmd, tickCmd), false
+		// Schedule enhance debounce (1.5s after last keystroke)
+		e.enhanceTickID++
+		enhanceID := e.enhanceTickID
+		enhanceCmd := tea.Tick(1500*time.Millisecond, func(_ time.Time) tea.Msg {
+			return editorEnhanceTickMsg{id: enhanceID}
+		})
+
+		return e, tea.Batch(cmd, tickCmd, enhanceCmd), false
 
 	case editorAutoSaveTickMsg:
 		// Only save if this tick matches the latest and we're dirty
@@ -305,8 +342,22 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd, bool) {
 			return e, nil, false
 		}
 
-		// Always update thoughts
-		e.aiThoughts = msg.thoughts
+		// Start typewriter effect for thoughts
+		if msg.thoughts != "" {
+			e.thoughtsTarget = msg.thoughts
+			e.thoughtsRevealed = 0
+			e.typewriterDone = false
+			e.aiThoughts = "" // will be revealed progressively
+		}
+
+		var cmds []tea.Cmd
+
+		// Kick off typewriter
+		if msg.thoughts != "" {
+			cmds = append(cmds, tea.Tick(20*time.Millisecond, func(_ time.Time) tea.Msg {
+				return editorTypewriterTickMsg{}
+			}))
+		}
 
 		// Only apply corrections if body hasn't changed since we sent the request
 		currentBody := e.body.Value()
@@ -318,19 +369,63 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd, bool) {
 			repositionCursor(&e.body, row, col)
 			e.canUndoEnhance = true
 			e.lastReviewedBody = msg.correctedBody
+			// Build correction summary
+			e.correctionSummary = buildCorrectionSummary(e.preCorrectBody, msg.correctedBody)
 			// Mark dirty so corrections get saved
 			e.dirty = true
 			e.saved = false
 			e.lastEdit = time.Now()
 			e.tickID++
 			tickID := e.tickID
-			tickCmd := tea.Tick(5*time.Second, func(_ time.Time) tea.Msg {
+			cmds = append(cmds, tea.Tick(5*time.Second, func(_ time.Time) tea.Msg {
 				return editorAutoSaveTickMsg{id: tickID}
-			})
-			return e, tickCmd, false
+			}))
+			return e, tea.Batch(cmds...), false
 		}
 		// Body changed during AI processing — update reviewed marker to current
 		e.lastReviewedBody = currentBody
+		e.correctionSummary = ""
+		if len(cmds) > 0 {
+			return e, tea.Batch(cmds...), false
+		}
+		return e, nil, false
+
+	case editorEnhanceTickMsg:
+		// Only trigger if this is the latest enhance tick (debounce)
+		if msg.id == e.enhanceTickID {
+			// Signal to model.go that it should try maybeEnhance
+			// We set a flag that model.go checks
+			e.enhanceReady = true
+		}
+		return e, nil, false
+
+	case editorSpinnerTickMsg:
+		if e.enhancePending {
+			e.spinnerFrame = (e.spinnerFrame + 1) % len(spinnerFrames)
+			return e, tea.Tick(100*time.Millisecond, func(_ time.Time) tea.Msg {
+				return editorSpinnerTickMsg{}
+			}), false
+		}
+		return e, nil, false
+
+	case editorTypewriterTickMsg:
+		if !e.typewriterDone && e.thoughtsTarget != "" {
+			runes := []rune(e.thoughtsTarget)
+			// Reveal 2 characters per tick for snappy feel
+			e.thoughtsRevealed += 2
+			if e.thoughtsRevealed >= len(runes) {
+				e.thoughtsRevealed = len(runes)
+				e.typewriterDone = true
+				e.aiThoughts = e.thoughtsTarget
+			} else {
+				e.aiThoughts = string(runes[:e.thoughtsRevealed])
+			}
+			if !e.typewriterDone {
+				return e, tea.Tick(20*time.Millisecond, func(_ time.Time) tea.Msg {
+					return editorTypewriterTickMsg{}
+				}), false
+			}
+		}
 		return e, nil, false
 	}
 
@@ -366,13 +461,21 @@ func (e *Editor) View(width, height int) string {
 	if e.saving {
 		status = editorDirtyStyle.Render("saving...")
 	} else if e.dirty {
-		status = editorDirtyStyle.Render("● modified")
+		statusText := "● modified"
+		if e.enhancePending {
+			statusText = e.SpinnerText() + " AI reviewing...  " + statusText
+		}
+		status = editorDirtyStyle.Render(statusText)
 	} else if e.saved {
-		status = editorSavedStyle.Render("✓ saved")
+		savedText := "✓ saved"
+		if e.enhancePending {
+			savedText = e.SpinnerText() + " AI reviewing...  " + savedText
+		}
+		status = editorSavedStyle.Render(savedText)
 	} else {
 		helpText := "Tab: indent  Shift+Tab: outdent  Ctrl+M: frontmatter  Esc: save & close  Ctrl+S: save  ⌘B/I: bold/italic  ⌘1-3: heading"
 		if e.enhancePending {
-			helpText = "AI reviewing...  " + helpText
+			helpText = e.SpinnerText() + " AI reviewing...  " + helpText
 		}
 		status = helpStyle.Render(helpText)
 	}
@@ -380,7 +483,7 @@ func (e *Editor) View(width, height int) string {
 	// Thoughts section (if available)
 	var thoughtsStr string
 	thoughtsHeight := 0
-	if e.aiThoughts != "" {
+	if e.aiThoughts != "" || e.correctionSummary != "" {
 		thoughtsStr = e.renderThoughts(width - 4)
 		thoughtsHeight = lipgloss.Height(thoughtsStr)
 	}
@@ -988,22 +1091,46 @@ func (e *Editor) undoLastCorrection() bool {
 	return true
 }
 
-// renderThoughts renders the AI thoughts/questions section.
+// renderThoughts renders the AI thoughts/questions section in a bordered box.
 func (e *Editor) renderThoughts(width int) string {
-	if e.aiThoughts == "" {
+	if e.aiThoughts == "" && e.correctionSummary == "" {
 		return ""
 	}
 
-	sep := editorSeparatorStyle.Render(strings.Repeat("─", width))
-	label := aiThoughtsLabelStyle.Render("AI thoughts")
-	content := aiThoughtsStyle.Render(e.aiThoughts)
+	var sections []string
 
-	undoHint := ""
-	if e.canUndoEnhance {
-		undoHint = "  " + helpStyle.Render("Ctrl+Z: undo corrections")
+	// Correction summary line
+	if e.correctionSummary != "" {
+		corrLine := aiCorrectionStyle.Render("✎ " + e.correctionSummary)
+		if e.canUndoEnhance {
+			corrLine += "  " + helpStyle.Render("Ctrl+Z to undo")
+		}
+		sections = append(sections, corrLine)
 	}
 
-	return lipgloss.JoinVertical(lipgloss.Left, sep, label+undoHint, content)
+	// Thoughts content with typewriter cursor
+	if e.aiThoughts != "" {
+		thoughtsText := e.aiThoughts
+		if !e.typewriterDone && e.thoughtsTarget != "" {
+			thoughtsText += "▌" // blinking cursor during typewriter
+		}
+		sections = append(sections, aiThoughtsStyle.Render(thoughtsText))
+	}
+
+	if len(sections) == 0 {
+		return ""
+	}
+
+	innerContent := lipgloss.JoinVertical(lipgloss.Left, sections...)
+
+	// Render in a bordered box
+	boxWidth := width
+	if boxWidth < 10 {
+		boxWidth = 10
+	}
+	box := aiThoughtsBoxStyle.Width(boxWidth - 2).Render(innerContent)
+
+	return box
 }
 
 // BodyValue returns the current body text for external access.
@@ -1029,4 +1156,73 @@ func (e *Editor) SetEnhancePending(pending bool) {
 // SetBodyAtRequest stores the body snapshot when an enhance request was sent.
 func (e *Editor) SetBodyAtRequest(body string) {
 	e.bodyAtRequest = body
+}
+
+// EnhanceReady returns and clears the enhance-ready flag set by debounce tick.
+func (e *Editor) EnhanceReady() bool {
+	if e.enhanceReady {
+		e.enhanceReady = false
+		return true
+	}
+	return false
+}
+
+// spinnerFrames are the animation frames for the AI thinking spinner.
+var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+// SpinnerText returns the current spinner frame text, or empty if not pending.
+func (e *Editor) SpinnerText() string {
+	if !e.enhancePending {
+		return ""
+	}
+	return spinnerFrames[e.spinnerFrame%len(spinnerFrames)]
+}
+
+// StartSpinner kicks off the spinner animation and returns the first tick command.
+func (e *Editor) StartSpinner() tea.Cmd {
+	e.spinnerFrame = 0
+	return tea.Tick(100*time.Millisecond, func(_ time.Time) tea.Msg {
+		return editorSpinnerTickMsg{}
+	})
+}
+
+// buildCorrectionSummary creates a brief description of what changed between old and new text.
+func buildCorrectionSummary(old, new string) string {
+	oldWords := strings.Fields(old)
+	newWords := strings.Fields(new)
+
+	// Find changed words (simple diff)
+	changes := 0
+	maxLen := len(oldWords)
+	if len(newWords) > maxLen {
+		maxLen = len(newWords)
+	}
+	var examples []string
+	for i := 0; i < maxLen && changes < 3; i++ {
+		var ow, nw string
+		if i < len(oldWords) {
+			ow = oldWords[i]
+		}
+		if i < len(newWords) {
+			nw = newWords[i]
+		}
+		if ow != nw && ow != "" && nw != "" {
+			changes++
+			examples = append(examples, fmt.Sprintf("%s → %s", ow, nw))
+		} else if ow != nw {
+			changes++
+		}
+	}
+
+	if len(examples) == 0 {
+		if changes > 0 {
+			return fmt.Sprintf("AI made %d correction(s)", changes)
+		}
+		return ""
+	}
+	summary := strings.Join(examples, ", ")
+	if changes > len(examples) {
+		summary += fmt.Sprintf(" (+%d more)", changes-len(examples))
+	}
+	return summary
 }

@@ -2296,8 +2296,8 @@ func TestModel_EditorEnhanceMsg_RoutedToEditor(t *testing.T) {
 	if m.editor.enhancePending {
 		t.Error("enhancePending should be false after handling enhance msg")
 	}
-	if m.editor.aiThoughts != "Nice note!" {
-		t.Errorf("aiThoughts = %q, want %q", m.editor.aiThoughts, "Nice note!")
+	if m.editor.thoughtsTarget != "Nice note!" {
+		t.Errorf("thoughtsTarget = %q, want %q", m.editor.thoughtsTarget, "Nice note!")
 	}
 }
 

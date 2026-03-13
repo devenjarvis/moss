@@ -788,8 +788,8 @@ func TestEditor_EnhanceMsg_AppliesCorrections(t *testing.T) {
 	if e.preCorrectBody != "Helo wrold" {
 		t.Errorf("preCorrectBody = %q, want %q", e.preCorrectBody, "Helo wrold")
 	}
-	if e.aiThoughts != "Consider expanding on your greeting." {
-		t.Errorf("aiThoughts = %q, want %q", e.aiThoughts, "Consider expanding on your greeting.")
+	if e.thoughtsTarget != "Consider expanding on your greeting." {
+		t.Errorf("thoughtsTarget = %q, want %q", e.thoughtsTarget, "Consider expanding on your greeting.")
 	}
 	if e.enhancePending {
 		t.Error("enhancePending should be false after receiving enhance msg")
@@ -817,9 +817,9 @@ func TestEditor_EnhanceMsg_SkipsIfBodyChanged(t *testing.T) {
 	if e.body.Value() != "Current body text" {
 		t.Errorf("body should not change, got %q", e.body.Value())
 	}
-	// But thoughts should still be updated
-	if e.aiThoughts != "Some thoughts." {
-		t.Errorf("aiThoughts = %q, want %q", e.aiThoughts, "Some thoughts.")
+	// But thoughts should still be updated (via typewriter target)
+	if e.thoughtsTarget != "Some thoughts." {
+		t.Errorf("thoughtsTarget = %q, want %q", e.thoughtsTarget, "Some thoughts.")
 	}
 	if e.canUndoEnhance {
 		t.Error("canUndoEnhance should be false when corrections not applied")
@@ -865,12 +865,12 @@ func TestEditor_EnhanceMsg_SkipsIdenticalBody(t *testing.T) {
 	if e.canUndoEnhance {
 		t.Error("should not set canUndoEnhance when body is identical")
 	}
-	if e.aiThoughts != "Looks good!" {
-		t.Errorf("aiThoughts = %q, want %q", e.aiThoughts, "Looks good!")
+	if e.thoughtsTarget != "Looks good!" {
+		t.Errorf("thoughtsTarget = %q, want %q", e.thoughtsTarget, "Looks good!")
 	}
-	// No auto-save tick needed since body didn't change
-	if cmd != nil {
-		t.Error("should not return command when body is identical")
+	// Should return a typewriter tick command for the thoughts reveal
+	if cmd == nil {
+		t.Error("should return typewriter tick command for thoughts")
 	}
 }
 
@@ -965,11 +965,9 @@ func TestEditor_SetBodyAtRequest(t *testing.T) {
 func TestEditor_View_ShowsThoughts(t *testing.T) {
 	e, _ := newTestEditor(t)
 	e.aiThoughts = "What about adding examples?"
+	e.typewriterDone = true
 
 	view := e.View(80, 30)
-	if !strings.Contains(view, "AI thoughts") {
-		t.Error("view should contain 'AI thoughts' label when thoughts are set")
-	}
 	if !strings.Contains(view, "What about adding examples?") {
 		t.Error("view should contain the thoughts content")
 	}
@@ -987,7 +985,7 @@ func TestEditor_View_NoThoughtsWhenEmpty(t *testing.T) {
 
 func TestEditor_View_ShowsUndoHint(t *testing.T) {
 	e, _ := newTestEditor(t)
-	e.aiThoughts = "Some thought"
+	e.correctionSummary = "Helo → Hello"
 	e.canUndoEnhance = true
 
 	view := e.View(80, 30)
