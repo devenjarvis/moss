@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/devenjarvis/moss/internal/note"
 	"gopkg.in/yaml.v3"
@@ -257,6 +258,13 @@ Output format (no markdown fences, no extra text):
 		scanner := bufio.NewScanner(stdout)
 		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
+		// Debug: log all events to a temp file for diagnosis
+		debugFile, _ := os.OpenFile("/tmp/moss-stream-debug.log", os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
+		if debugFile != nil {
+			defer debugFile.Close()
+			fmt.Fprintf(debugFile, "=== EnhanceStream started at %s ===\n", time.Now().Format(time.RFC3339Nano))
+		}
+
 		// We accumulate the full generated text ourselves so we can handle
 		// both incremental deltas (content_block_delta) and accumulated
 		// snapshots (assistant messages) from the CLI.
@@ -266,6 +274,10 @@ Output format (no markdown fences, no extra text):
 
 		for scanner.Scan() {
 			line := scanner.Text()
+
+			if debugFile != nil {
+				fmt.Fprintf(debugFile, "[%s] %s\n", time.Now().Format("15:04:05.000"), line)
+			}
 
 			// Try incremental delta first (content_block_delta events).
 			// These arrive token-by-token and are the real streaming path.
@@ -319,9 +331,23 @@ Output format (no markdown fences, no extra text):
 			}
 		}
 
+		if debugFile != nil {
+			fmt.Fprintf(debugFile, "[%s] scanner done, accumulated=%d bytes, thoughtsSent=%d, delimiterFound=%v\n",
+				time.Now().Format("15:04:05.000"), accumulated.Len(), thoughtsSent, delimiterFound)
+		}
+
 		if err := cmd.Wait(); err != nil {
+			if debugFile != nil {
+				fmt.Fprintf(debugFile, "[%s] cmd.Wait error: %v, stderr: %s\n",
+					time.Now().Format("15:04:05.000"), err, stderr.String())
+			}
 			ch <- StreamEvent{Err: fmt.Errorf("enhance stream: %w: %s", err, stderr.String())}
 			return
+		}
+
+		if debugFile != nil {
+			fmt.Fprintf(debugFile, "[%s] cmd.Wait done, stderr=%q\n",
+				time.Now().Format("15:04:05.000"), stderr.String())
 		}
 
 		// Extract corrected body from the final accumulated text
