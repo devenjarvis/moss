@@ -309,18 +309,28 @@ func TestExtractStreamDelta(t *testing.T) {
 		want string
 	}{
 		{
-			"content_block_delta with text",
-			`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}`,
+			"stream_event wrapped text_delta",
+			`{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Hello"}},"session_id":"abc"}`,
 			"Hello",
 		},
 		{
-			"content_block_delta non-text",
-			`{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"hmm"}}`,
+			"stream_event wrapped thinking_delta",
+			`{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"hmm"}},"session_id":"abc"}`,
 			"",
+		},
+		{
+			"unwrapped content_block_delta (backwards compat)",
+			`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}`,
+			"Hi",
 		},
 		{
 			"assistant message (not a delta)",
 			`{"type":"assistant","message":{"content":[{"type":"text","text":"Hello world"}]}}`,
+			"",
+		},
+		{
+			"stream_event non-delta (message_start)",
+			`{"type":"stream_event","event":{"type":"message_start","message":{"model":"haiku"}},"session_id":"abc"}`,
 			"",
 		},
 		{
@@ -382,12 +392,12 @@ func TestExtractTextSnapshot(t *testing.T) {
 }
 
 func TestStreamDelta_AccumulatedChunks(t *testing.T) {
-	// Simulate a real streaming sequence with content_block_delta events
+	// Simulate a real streaming sequence with stream_event wrapped deltas
 	messages := []string{
 		`{"type":"system","subtype":"init"}`,
-		`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Great "}}`,
-		`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"note! "}}`,
-		`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Consider"}}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Great "}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"note! "}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Consider"}}}`,
 		`{"type":"result","result":"Great note! Consider"}`,
 	}
 
