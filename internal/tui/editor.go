@@ -44,7 +44,7 @@ type noteCreatedMsg struct {
 
 // editorEnhanceChunkMsg delivers a streaming chunk of AI thoughts text.
 type editorEnhanceChunkMsg struct {
-	delta string            // new text to append to thoughts
+	delta string                // new text to append to thoughts
 	ch    <-chan ai.StreamEvent // channel for next chunk
 }
 
