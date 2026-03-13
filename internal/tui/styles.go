@@ -110,10 +110,6 @@ var (
 	mdHRuleStyle      = lipgloss.NewStyle().Foreground(colorMuted)
 
 	// AI thoughts
-	aiThoughtsLabelStyle = lipgloss.NewStyle().
-				Foreground(colorSecondary).
-				Italic(true)
-
 	aiThoughtsStyle = lipgloss.NewStyle().
 			Foreground(colorMuted).
 			Italic(true).

@@ -95,8 +95,7 @@ type Editor struct {
 	enhanceTickID int // tick ID for enhance debounce
 
 	// Spinner animation
-	spinnerFrame int       // current frame index
-	spinnerTick  time.Time // last spinner update
+	spinnerFrame int // current frame index
 
 	// Streaming state
 	streamingThoughts bool // true while thoughts are streaming in
