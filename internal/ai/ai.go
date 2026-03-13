@@ -1,6 +1,7 @@
 package ai
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -175,8 +176,168 @@ Then write the note body in clean markdown.`, userPrompt)
 	return RunClaude(ctx, ModelSonnet, prompt, sourceNotes)
 }
 
+// StreamEvent represents a chunk of streaming output from AI enhancement.
+type StreamEvent struct {
+	// ThoughtsDelta contains new text to append to the thoughts display.
+	// Empty when the event is a completion or body event.
+	ThoughtsDelta string
+
+	// CorrectedBody is set only in the final event when streaming is complete.
+	CorrectedBody string
+
+	// Done is true for the final event.
+	Done bool
+
+	// Err is set if the stream encountered an error.
+	Err error
+}
+
+// enhanceDelimiter separates thoughts from corrected body in streaming output.
+const enhanceDelimiter = "===CORRECTED==="
+
+// EnhanceStream starts a streaming AI enhancement and returns a channel of events.
+// Thoughts are streamed as they arrive; the corrected body is sent in the final event.
+func EnhanceStream(ctx context.Context, body string, diff string) <-chan StreamEvent {
+	ch := make(chan StreamEvent, 16)
+
+	prompt := fmt.Sprintf(`You are an editing assistant for a note-taking app. You will receive a markdown note body via stdin.
+
+Your job:
+1. First, provide 1-3 brief thoughts or questions about the note that might prompt the writer to expand, clarify, or think deeper. These should be conversational and helpful.
+2. Then output the exact delimiter line: %s
+3. Then output the corrected note body. Fix ONLY spelling, grammar, punctuation, and formatting errors. Do NOT add new content, change the meaning, restructure sections, or remove anything. Preserve all markdown formatting exactly. If there are no corrections needed, output the body unchanged.
+
+Recent changes (diff) for context:
+%s
+
+Output format (no markdown fences, no extra text):
+<your thoughts>
+%s
+<corrected body>`, enhanceDelimiter, diff, enhanceDelimiter)
+
+	go func() {
+		defer close(ch)
+
+		args := []string{"-p", prompt, "--output-format", "stream-json", "--verbose", "--include-partial-messages"}
+		args = append(args, "--model", ModelHaiku)
+
+		cmd := exec.CommandContext(ctx, "claude", args...)
+		cmd.Stdin = strings.NewReader(body)
+		setSysProcAttr(cmd)
+
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			ch <- StreamEvent{Err: fmt.Errorf("enhance stream: %w", err)}
+			return
+		}
+		cmd.Stderr = &bytes.Buffer{} // discard stderr
+
+		if err := cmd.Start(); err != nil {
+			ch <- StreamEvent{Err: fmt.Errorf("enhance stream: %w", err)}
+			return
+		}
+
+		var lastText string // tracks accumulated text from partial messages
+		inBody := false
+		var bodyBuf strings.Builder
+		scanner := bufio.NewScanner(stdout)
+		// Increase scanner buffer for large responses
+		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+
+		for scanner.Scan() {
+			line := scanner.Text()
+			fullText := extractTextContent(line)
+			if fullText == "" || fullText == lastText {
+				continue
+			}
+
+			// Compute the delta (new text since last partial message)
+			delta := fullText
+			if strings.HasPrefix(fullText, lastText) {
+				delta = fullText[len(lastText):]
+			}
+			lastText = fullText
+
+			if inBody {
+				bodyBuf.WriteString(delta)
+				continue
+			}
+
+			// Check if delimiter has appeared in accumulated text
+			if idx := strings.Index(fullText, enhanceDelimiter); idx >= 0 {
+				inBody = true
+				after := fullText[idx+len(enhanceDelimiter):]
+				bodyBuf.WriteString(strings.TrimLeft(after, "\n"))
+				continue
+			}
+			// Stream thoughts delta to the UI
+			if delta != "" {
+				ch <- StreamEvent{ThoughtsDelta: delta}
+			}
+		}
+
+		if err := cmd.Wait(); err != nil {
+			ch <- StreamEvent{Err: fmt.Errorf("enhance stream: %w", err)}
+			return
+		}
+
+		// Parse final result
+		correctedBody := strings.TrimSpace(bodyBuf.String())
+		if !inBody {
+			// Delimiter never appeared — treat entire output as thoughts, no corrections
+			correctedBody = ""
+		}
+
+		ch <- StreamEvent{
+			CorrectedBody: correctedBody,
+			Done:          true,
+		}
+	}()
+
+	return ch
+}
+
+// streamJSON is the minimal structure for parsing Claude CLI stream-json output.
+type streamJSON struct {
+	Type    string `json:"type"`
+	Message *struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	} `json:"message"`
+}
+
+// extractTextContent extracts the full accumulated text from a stream-json line.
+// With --include-partial-messages, each assistant message contains all text
+// generated so far. We compute deltas by comparing with the previous message.
+func extractTextContent(line string) string {
+	var msg streamJSON
+	if err := json.Unmarshal([]byte(line), &msg); err != nil {
+		return ""
+	}
+	if msg.Type == "assistant" && msg.Message != nil {
+		for _, c := range msg.Message.Content {
+			if c.Type == "text" {
+				return c.Text
+			}
+		}
+	}
+	// Also handle result type which contains final text
+	if msg.Type == "result" {
+		var resultMsg struct {
+			Result string `json:"result"`
+		}
+		if err := json.Unmarshal([]byte(line), &resultMsg); err == nil && resultMsg.Result != "" {
+			return resultMsg.Result
+		}
+	}
+	return ""
+}
+
 // Enhance sends a note body to Haiku for spelling/grammar corrections and
 // returns the corrected body along with brief thoughts/questions about the note.
+// This is the non-streaming version kept as fallback.
 func Enhance(ctx context.Context, body string, diff string) (EnhanceResult, error) {
 	prompt := fmt.Sprintf(`You are an editing assistant for a note-taking app. You will receive a markdown note body via stdin.
 

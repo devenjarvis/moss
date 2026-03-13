@@ -301,6 +301,67 @@ func TestSuggestTagsParsing(t *testing.T) {
 	}
 }
 
+func TestExtractTextContent(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+		want string
+	}{
+		{
+			"assistant message with text",
+			`{"type":"assistant","message":{"content":[{"type":"text","text":"Hello world"}]}}`,
+			"Hello world",
+		},
+		{
+			"result message",
+			`{"type":"result","result":"Final text here"}`,
+			"Final text here",
+		},
+		{
+			"system init message",
+			`{"type":"system","subtype":"init","session_id":"abc"}`,
+			"",
+		},
+		{
+			"invalid json",
+			`not json`,
+			"",
+		},
+		{
+			"empty text",
+			`{"type":"assistant","message":{"content":[{"type":"text","text":""}]}}`,
+			"",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractTextContent(tt.line)
+			if got != tt.want {
+				t.Errorf("extractTextContent() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStreamEventTypes(t *testing.T) {
+	// Verify StreamEvent fields work correctly
+	chunk := StreamEvent{ThoughtsDelta: "Hello "}
+	if chunk.ThoughtsDelta != "Hello " {
+		t.Errorf("ThoughtsDelta = %q, want %q", chunk.ThoughtsDelta, "Hello ")
+	}
+	if chunk.Done {
+		t.Error("chunk should not be done")
+	}
+
+	complete := StreamEvent{CorrectedBody: "Fixed text", Done: true}
+	if !complete.Done {
+		t.Error("complete event should be done")
+	}
+	if complete.CorrectedBody != "Fixed text" {
+		t.Errorf("CorrectedBody = %q, want %q", complete.CorrectedBody, "Fixed text")
+	}
+}
+
 // Helper functions that mirror the parsing logic in SuggestTags
 func trimBrackets(s string) string {
 	if len(s) >= 2 && s[0] == '[' && s[len(s)-1] == ']' {

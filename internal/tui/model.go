@@ -685,7 +685,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case editorEnhanceMsg:
+	case editorEnhanceChunkMsg:
+		if m.mode == modeEdit {
+			var cmd tea.Cmd
+			m.editor, cmd, _ = m.editor.Update(msg)
+			return m, cmd
+		}
+		return m, nil
+
+	case editorEnhanceCompleteMsg:
 		if m.mode == modeEdit {
 			var cmd tea.Cmd
 			m.editor, cmd, _ = m.editor.Update(msg)
@@ -694,14 +702,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case editorSpinnerTickMsg:
-		if m.mode == modeEdit {
-			var cmd tea.Cmd
-			m.editor, cmd, _ = m.editor.Update(msg)
-			return m, cmd
-		}
-		return m, nil
-
-	case editorTypewriterTickMsg:
 		if m.mode == modeEdit {
 			var cmd tea.Cmd
 			m.editor, cmd, _ = m.editor.Update(msg)
@@ -1317,7 +1317,7 @@ func (m *Model) filterByTag(tag string) tea.Cmd {
 	}
 }
 
-// maybeEnhance triggers an AI enhancement if the body has changed since the last review.
+// maybeEnhance triggers a streaming AI enhancement if the body has changed since the last review.
 func (m *Model) maybeEnhance() tea.Cmd {
 	if m.worker == nil {
 		return nil
@@ -1345,31 +1345,16 @@ func (m *Model) maybeEnhance() tea.Cmd {
 
 	m.editor.SetEnhancePending(true)
 	m.editor.SetBodyAtRequest(currentBody)
+	m.editor.ClearThoughts()
 
-	resultCh := make(chan ai.Result, 1)
-	m.worker.Submit(ai.Task{
-		Type:     "enhance",
-		Stdin:    currentBody,
-		Prompt:   diff,
-		Model:    ai.ModelHaiku,
-		ResultCh: resultCh,
-	})
+	// Start streaming enhance — thoughts arrive as chunks, body at completion
+	streamCh := ai.EnhanceStream(context.Background(), currentBody, diff)
 
-	// Start spinner animation
+	// Start spinner + first stream read
 	spinnerCmd := m.editor.StartSpinner()
+	streamCmd := waitForStreamChunk(streamCh)
 
-	waitCmd := func() tea.Msg {
-		result := <-resultCh
-		if result.Err != nil {
-			return editorEnhanceMsg{err: result.Err}
-		}
-		return editorEnhanceMsg{
-			correctedBody: result.Output,
-			thoughts:      result.Thoughts,
-		}
-	}
-
-	return tea.Batch(spinnerCmd, waitCmd)
+	return tea.Batch(spinnerCmd, streamCmd)
 }
 
 func (m *Model) ensureListVisible() {

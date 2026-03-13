@@ -2282,33 +2282,28 @@ func TestMaybeEnhance_SkipsNilWorker(t *testing.T) {
 	}
 }
 
-func TestModel_EditorEnhanceMsg_RoutedToEditor(t *testing.T) {
+func TestModel_EditorEnhanceComplete_RoutedToEditor(t *testing.T) {
 	m := newTestModelInEditMode(t)
 	m.editor.enhancePending = true
 	m.editor.bodyAtRequest = m.editor.BodyValue()
 
-	model, _ := m.Update(editorEnhanceMsg{
+	model, _ := m.Update(editorEnhanceCompleteMsg{
 		correctedBody: "corrected content here",
-		thoughts:      "Nice note!",
 	})
 	m = model.(Model)
 
 	if m.editor.enhancePending {
-		t.Error("enhancePending should be false after handling enhance msg")
-	}
-	if m.editor.thoughtsTarget != "Nice note!" {
-		t.Errorf("thoughtsTarget = %q, want %q", m.editor.thoughtsTarget, "Nice note!")
+		t.Error("enhancePending should be false after handling enhance complete msg")
 	}
 }
 
-func TestModel_EditorEnhanceMsg_IgnoredOutsideEditMode(t *testing.T) {
+func TestModel_EditorEnhanceComplete_IgnoredOutsideEditMode(t *testing.T) {
 	m := newTestModel(t)
 	m.mode = modeNormal
 
 	// Should not panic
-	model, _ := m.Update(editorEnhanceMsg{
+	model, _ := m.Update(editorEnhanceCompleteMsg{
 		correctedBody: "some body",
-		thoughts:      "some thoughts",
 	})
 	_ = model.(Model)
 }

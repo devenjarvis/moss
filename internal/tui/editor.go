@@ -12,6 +12,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"github.com/devenjarvis/moss/internal/ai"
 	"github.com/devenjarvis/moss/internal/autocorrect"
 	"github.com/devenjarvis/moss/internal/db"
 	"github.com/devenjarvis/moss/internal/note"
@@ -40,9 +41,16 @@ type noteCreatedMsg struct {
 }
 
 // Editor messages for AI enhancement
-type editorEnhanceMsg struct {
+
+// editorEnhanceChunkMsg delivers a streaming chunk of AI thoughts text.
+type editorEnhanceChunkMsg struct {
+	delta string            // new text to append to thoughts
+	ch    <-chan ai.StreamEvent // channel for next chunk
+}
+
+// editorEnhanceCompleteMsg signals streaming is done with the corrected body.
+type editorEnhanceCompleteMsg struct {
 	correctedBody string
-	thoughts      string
 	err           error
 }
 
@@ -53,9 +61,6 @@ type editorEnhanceTickMsg struct {
 
 // editorSpinnerTickMsg drives the spinner animation while AI is thinking.
 type editorSpinnerTickMsg struct{}
-
-// editorTypewriterTickMsg drives the typewriter reveal effect for AI thoughts.
-type editorTypewriterTickMsg struct{}
 
 // Editor is the in-app note editor component.
 type Editor struct {
@@ -93,10 +98,8 @@ type Editor struct {
 	spinnerFrame int       // current frame index
 	spinnerTick  time.Time // last spinner update
 
-	// Typewriter effect
-	thoughtsTarget   string // full thoughts text to reveal
-	thoughtsRevealed int    // number of runes revealed so far
-	typewriterDone   bool   // true when fully revealed
+	// Streaming state
+	streamingThoughts bool // true while thoughts are streaming in
 
 	// Redo state
 	redoCorrectedBody string // stashed corrected body for redo after undo
@@ -363,28 +366,19 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd, bool) {
 		}
 		return e, nil, false
 
-	case editorEnhanceMsg:
+	case editorEnhanceChunkMsg:
+		// Streaming chunk of AI thoughts — append to display
+		e.aiThoughts += msg.delta
+		e.streamingThoughts = true
+		// Schedule read of the next chunk from the stream
+		return e, waitForStreamChunk(msg.ch), false
+
+	case editorEnhanceCompleteMsg:
 		e.enhancePending = false
+		e.streamingThoughts = false
 		if msg.err != nil {
 			// Silently ignore AI errors — don't disrupt editing
 			return e, nil, false
-		}
-
-		// Start typewriter effect for thoughts
-		if msg.thoughts != "" {
-			e.thoughtsTarget = msg.thoughts
-			e.thoughtsRevealed = 0
-			e.typewriterDone = false
-			e.aiThoughts = "" // will be revealed progressively
-		}
-
-		var cmds []tea.Cmd
-
-		// Kick off typewriter
-		if msg.thoughts != "" {
-			cmds = append(cmds, tea.Tick(20*time.Millisecond, func(_ time.Time) tea.Msg {
-				return editorTypewriterTickMsg{}
-			}))
 		}
 
 		// Only apply corrections if body hasn't changed since we sent the request
@@ -403,16 +397,12 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd, bool) {
 			e.lastEdit = time.Now()
 			e.tickID++
 			tickID := e.tickID
-			cmds = append(cmds, tea.Tick(5*time.Second, func(_ time.Time) tea.Msg {
+			return e, tea.Tick(5*time.Second, func(_ time.Time) tea.Msg {
 				return editorAutoSaveTickMsg{id: tickID}
-			}))
-			return e, tea.Batch(cmds...), false
+			}), false
 		}
 		// Body changed during AI processing — update reviewed marker to current
 		e.lastReviewedBody = currentBody
-		if len(cmds) > 0 {
-			return e, tea.Batch(cmds...), false
-		}
 		return e, nil, false
 
 	case editorEnhanceTickMsg:
@@ -430,26 +420,6 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd, bool) {
 			return e, tea.Tick(100*time.Millisecond, func(_ time.Time) tea.Msg {
 				return editorSpinnerTickMsg{}
 			}), false
-		}
-		return e, nil, false
-
-	case editorTypewriterTickMsg:
-		if !e.typewriterDone && e.thoughtsTarget != "" {
-			runes := []rune(e.thoughtsTarget)
-			// Reveal 2 characters per tick for snappy feel
-			e.thoughtsRevealed += 2
-			if e.thoughtsRevealed >= len(runes) {
-				e.thoughtsRevealed = len(runes)
-				e.typewriterDone = true
-				e.aiThoughts = e.thoughtsTarget
-			} else {
-				e.aiThoughts = string(runes[:e.thoughtsRevealed])
-			}
-			if !e.typewriterDone {
-				return e, tea.Tick(20*time.Millisecond, func(_ time.Time) tea.Msg {
-					return editorTypewriterTickMsg{}
-				}), false
-			}
 		}
 		return e, nil, false
 	}
@@ -1123,8 +1093,8 @@ func (e *Editor) renderThoughts(width int) string {
 	}
 
 	thoughtsText := e.aiThoughts
-	if !e.typewriterDone && e.thoughtsTarget != "" {
-		thoughtsText += "▌" // blinking cursor during typewriter
+	if e.streamingThoughts {
+		thoughtsText += "▌" // cursor while streaming
 	}
 
 	var sections []string
@@ -1175,6 +1145,12 @@ func (e *Editor) SetBodyAtRequest(body string) {
 	e.bodyAtRequest = body
 }
 
+// ClearThoughts resets the AI thoughts display for a new streaming session.
+func (e *Editor) ClearThoughts() {
+	e.aiThoughts = ""
+	e.streamingThoughts = false
+}
+
 // EnhanceReady returns and clears the enhance-ready flag set by debounce tick.
 func (e *Editor) EnhanceReady() bool {
 	if e.enhanceReady {
@@ -1201,4 +1177,22 @@ func (e *Editor) StartSpinner() tea.Cmd {
 	return tea.Tick(100*time.Millisecond, func(_ time.Time) tea.Msg {
 		return editorSpinnerTickMsg{}
 	})
+}
+
+// waitForStreamChunk returns a tea.Cmd that reads the next event from a stream channel.
+func waitForStreamChunk(ch <-chan ai.StreamEvent) tea.Cmd {
+	return func() tea.Msg {
+		event, ok := <-ch
+		if !ok {
+			// Channel closed unexpectedly
+			return editorEnhanceCompleteMsg{}
+		}
+		if event.Err != nil {
+			return editorEnhanceCompleteMsg{err: event.Err}
+		}
+		if event.Done {
+			return editorEnhanceCompleteMsg{correctedBody: event.CorrectedBody}
+		}
+		return editorEnhanceChunkMsg{delta: event.ThoughtsDelta, ch: ch}
+	}
 }
