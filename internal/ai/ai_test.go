@@ -302,7 +302,44 @@ func TestSuggestTagsParsing(t *testing.T) {
 	}
 }
 
-func TestExtractTextContent(t *testing.T) {
+func TestExtractStreamDelta(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+		want string
+	}{
+		{
+			"content_block_delta with text",
+			`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}`,
+			"Hello",
+		},
+		{
+			"content_block_delta non-text",
+			`{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"hmm"}}`,
+			"",
+		},
+		{
+			"assistant message (not a delta)",
+			`{"type":"assistant","message":{"content":[{"type":"text","text":"Hello world"}]}}`,
+			"",
+		},
+		{
+			"invalid json",
+			`not json`,
+			"",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractStreamDelta(tt.line)
+			if got != tt.want {
+				t.Errorf("extractStreamDelta() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExtractTextSnapshot(t *testing.T) {
 	tests := []struct {
 		name string
 		line string
@@ -311,6 +348,11 @@ func TestExtractTextContent(t *testing.T) {
 		{
 			"assistant message with text",
 			`{"type":"assistant","message":{"content":[{"type":"text","text":"Hello world"}]}}`,
+			"Hello world",
+		},
+		{
+			"assistant with multiple content blocks",
+			`{"type":"assistant","message":{"content":[{"type":"text","text":"Hello "},{"type":"text","text":"world"}]}}`,
 			"Hello world",
 		},
 		{
@@ -324,49 +366,50 @@ func TestExtractTextContent(t *testing.T) {
 			"",
 		},
 		{
-			"invalid json",
-			`not json`,
-			"",
-		},
-		{
-			"empty text",
-			`{"type":"assistant","message":{"content":[{"type":"text","text":""}]}}`,
+			"content_block_delta (not a snapshot)",
+			`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}`,
 			"",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := extractTextContent(tt.line)
+			got := extractTextSnapshot(tt.line)
 			if got != tt.want {
-				t.Errorf("extractTextContent() = %q, want %q", got, tt.want)
+				t.Errorf("extractTextSnapshot() = %q, want %q", got, tt.want)
 			}
 		})
 	}
 }
 
-func TestExtractTextContent_AccumulatedPartials(t *testing.T) {
-	// Simulate a sequence of partial messages with accumulated text
-	// This tests the pattern used in EnhanceStream
+func TestStreamDelta_AccumulatedChunks(t *testing.T) {
+	// Simulate a real streaming sequence with content_block_delta events
 	messages := []string{
 		`{"type":"system","subtype":"init"}`,
-		`{"type":"assistant","message":{"content":[{"type":"text","text":"Great "}]}}`,
-		`{"type":"assistant","message":{"content":[{"type":"text","text":"Great note! "}]}}`,
-		`{"type":"assistant","message":{"content":[{"type":"text","text":"Great note! Consider"}]}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Great "}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"note! "}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Consider"}}`,
+		`{"type":"result","result":"Great note! Consider"}`,
 	}
 
-	var lastText string
+	var accumulated strings.Builder
 	var thoughtsSent int
 	var chunks []string
 
 	for _, line := range messages {
-		fullText := extractTextContent(line)
-		if fullText == "" || fullText == lastText {
+		if delta := extractStreamDelta(line); delta != "" {
+			accumulated.WriteString(delta)
+			fullText := accumulated.String()
+			if len(fullText) > thoughtsSent {
+				chunks = append(chunks, fullText[thoughtsSent:])
+				thoughtsSent = len(fullText)
+			}
 			continue
 		}
-		lastText = fullText
-		if len(fullText) > thoughtsSent {
-			chunks = append(chunks, fullText[thoughtsSent:])
-			thoughtsSent = len(fullText)
+		if snapshot := extractTextSnapshot(line); snapshot != "" {
+			if snapshot != accumulated.String() {
+				accumulated.Reset()
+				accumulated.WriteString(snapshot)
+			}
 		}
 	}
 
@@ -374,7 +417,7 @@ func TestExtractTextContent_AccumulatedPartials(t *testing.T) {
 		t.Errorf("accumulated chunks = %q, want %q", got, "Great note! Consider")
 	}
 	if len(chunks) != 3 {
-		t.Errorf("got %d chunks, want 3", len(chunks))
+		t.Errorf("got %d chunks, want 3: %v", len(chunks), chunks)
 	}
 }
 

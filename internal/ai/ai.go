@@ -254,44 +254,68 @@ Output format (no markdown fences, no extra text):
 			return
 		}
 
-		var thoughtsSent int // how many bytes of thoughts we've already sent
-		delimiterFound := false
 		scanner := bufio.NewScanner(stdout)
-		// Increase scanner buffer for large responses
 		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
-		// Each partial message contains the FULL accumulated text so far.
-		// We track how much thoughts text we've sent and detect the delimiter.
-		var lastText string
+		// We accumulate the full generated text ourselves so we can handle
+		// both incremental deltas (content_block_delta) and accumulated
+		// snapshots (assistant messages) from the CLI.
+		var accumulated strings.Builder
+		var thoughtsSent int
+		delimiterFound := false
 
 		for scanner.Scan() {
 			line := scanner.Text()
-			fullText := extractTextContent(line)
-			if fullText == "" || fullText == lastText {
-				continue
-			}
-			lastText = fullText
 
-			if delimiterFound {
-				// Already past delimiter — body is growing, just keep lastText updated
-				continue
-			}
+			// Try incremental delta first (content_block_delta events).
+			// These arrive token-by-token and are the real streaming path.
+			if delta := extractStreamDelta(line); delta != "" {
+				accumulated.WriteString(delta)
+				fullText := accumulated.String()
 
-			// Check if delimiter has appeared in accumulated text
-			if idx := strings.Index(fullText, enhanceDelimiter); idx >= 0 {
-				// Send any unsent thoughts before the delimiter
-				thoughtsPortion := fullText[:idx]
-				if len(thoughtsPortion) > thoughtsSent {
-					ch <- StreamEvent{ThoughtsDelta: thoughtsPortion[thoughtsSent:]}
+				if delimiterFound {
+					continue
 				}
-				delimiterFound = true
+				if idx := strings.Index(fullText, enhanceDelimiter); idx >= 0 {
+					thoughtsPortion := fullText[:idx]
+					if len(thoughtsPortion) > thoughtsSent {
+						ch <- StreamEvent{ThoughtsDelta: thoughtsPortion[thoughtsSent:]}
+					}
+					delimiterFound = true
+					continue
+				}
+				if len(fullText) > thoughtsSent {
+					ch <- StreamEvent{ThoughtsDelta: fullText[thoughtsSent:]}
+					thoughtsSent = len(fullText)
+				}
 				continue
 			}
 
-			// Stream new thoughts since last partial message
-			if len(fullText) > thoughtsSent {
-				ch <- StreamEvent{ThoughtsDelta: fullText[thoughtsSent:]}
-				thoughtsSent = len(fullText)
+			// Fall back to accumulated text from assistant/result messages.
+			// This handles the case where partial messages aren't available.
+			if snapshot := extractTextSnapshot(line); snapshot != "" {
+				if snapshot == accumulated.String() {
+					continue
+				}
+				accumulated.Reset()
+				accumulated.WriteString(snapshot)
+				fullText := snapshot
+
+				if delimiterFound {
+					continue
+				}
+				if idx := strings.Index(fullText, enhanceDelimiter); idx >= 0 {
+					thoughtsPortion := fullText[:idx]
+					if len(thoughtsPortion) > thoughtsSent {
+						ch <- StreamEvent{ThoughtsDelta: thoughtsPortion[thoughtsSent:]}
+					}
+					delimiterFound = true
+					continue
+				}
+				if len(fullText) > thoughtsSent {
+					ch <- StreamEvent{ThoughtsDelta: fullText[thoughtsSent:]}
+					thoughtsSent = len(fullText)
+				}
 			}
 		}
 
@@ -302,19 +326,16 @@ Output format (no markdown fences, no extra text):
 
 		// Extract corrected body from the final accumulated text
 		var correctedBody string
-		if delimiterFound {
-			if idx := strings.Index(lastText, enhanceDelimiter); idx >= 0 {
-				correctedBody = strings.TrimSpace(lastText[idx+len(enhanceDelimiter):])
-			}
-		} else if lastText != "" {
-			// Delimiter never appeared during streaming; try the final text
-			if idx := strings.Index(lastText, enhanceDelimiter); idx >= 0 {
-				thoughtsPortion := lastText[:idx]
+		fullText := accumulated.String()
+		if idx := strings.Index(fullText, enhanceDelimiter); idx >= 0 {
+			if !delimiterFound {
+				// Delimiter found only in final text — send unsent thoughts
+				thoughtsPortion := fullText[:idx]
 				if len(thoughtsPortion) > thoughtsSent {
 					ch <- StreamEvent{ThoughtsDelta: thoughtsPortion[thoughtsSent:]}
 				}
-				correctedBody = strings.TrimSpace(lastText[idx+len(enhanceDelimiter):])
 			}
+			correctedBody = strings.TrimSpace(fullText[idx+len(enhanceDelimiter):])
 		}
 
 		ch <- StreamEvent{
@@ -326,39 +347,70 @@ Output format (no markdown fences, no extra text):
 	return ch
 }
 
-// streamJSON is the minimal structure for parsing Claude CLI stream-json output.
-type streamJSON struct {
-	Type    string `json:"type"`
-	Message *struct {
-		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
-	} `json:"message"`
+// streamEventType extracts just the "type" field from a JSON line.
+type streamEventType struct {
+	Type string `json:"type"`
 }
 
-// extractTextContent extracts the full accumulated text from a stream-json line.
-// With --include-partial-messages, each assistant message contains all text
-// generated so far. We compute deltas by comparing with the previous message.
-func extractTextContent(line string) string {
-	var msg streamJSON
-	if err := json.Unmarshal([]byte(line), &msg); err != nil {
+// extractStreamDelta extracts incremental text from content_block_delta events.
+// These arrive token-by-token during streaming and are the primary source of
+// real-time text. Returns empty string for non-delta events.
+func extractStreamDelta(line string) string {
+	var evt streamEventType
+	if err := json.Unmarshal([]byte(line), &evt); err != nil {
 		return ""
 	}
-	if msg.Type == "assistant" && msg.Message != nil {
-		for _, c := range msg.Message.Content {
-			if c.Type == "text" {
-				return c.Text
+	if evt.Type != "content_block_delta" {
+		return ""
+	}
+	var delta struct {
+		Delta struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"delta"`
+	}
+	if err := json.Unmarshal([]byte(line), &delta); err != nil {
+		return ""
+	}
+	if delta.Delta.Type == "text_delta" {
+		return delta.Delta.Text
+	}
+	return ""
+}
+
+// extractTextSnapshot extracts the full accumulated text from assistant or
+// result messages. These serve as snapshots of all text generated so far.
+// Returns empty string for non-matching events.
+func extractTextSnapshot(line string) string {
+	var evt streamEventType
+	if err := json.Unmarshal([]byte(line), &evt); err != nil {
+		return ""
+	}
+	if evt.Type == "assistant" {
+		var msg struct {
+			Message *struct {
+				Content []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"message"`
+		}
+		if err := json.Unmarshal([]byte(line), &msg); err == nil && msg.Message != nil {
+			var sb strings.Builder
+			for _, c := range msg.Message.Content {
+				if c.Type == "text" {
+					sb.WriteString(c.Text)
+				}
 			}
+			return sb.String()
 		}
 	}
-	// Also handle result type which contains final text
-	if msg.Type == "result" {
-		var resultMsg struct {
+	if evt.Type == "result" {
+		var msg struct {
 			Result string `json:"result"`
 		}
-		if err := json.Unmarshal([]byte(line), &resultMsg); err == nil && resultMsg.Result != "" {
-			return resultMsg.Result
+		if err := json.Unmarshal([]byte(line), &msg); err == nil && msg.Result != "" {
+			return msg.Result
 		}
 	}
 	return ""
