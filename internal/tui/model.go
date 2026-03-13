@@ -695,13 +695,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case editorSpinnerTickMsg:
 		if m.mode == modeEdit {
-			m.editor, _, _ = m.editor.Update(msg)
+			var cmd tea.Cmd
+			m.editor, cmd, _ = m.editor.Update(msg)
+			return m, cmd
 		}
 		return m, nil
 
 	case editorTypewriterTickMsg:
 		if m.mode == modeEdit {
-			m.editor, _, _ = m.editor.Update(msg)
+			var cmd tea.Cmd
+			m.editor, cmd, _ = m.editor.Update(msg)
+			return m, cmd
 		}
 		return m, nil
 
