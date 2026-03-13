@@ -985,7 +985,7 @@ func TestEditor_View_NoThoughtsWhenEmpty(t *testing.T) {
 
 func TestEditor_View_ShowsUndoHint(t *testing.T) {
 	e, _ := newTestEditor(t)
-	e.correctionSummary = "Helo → Hello"
+	e.aiThoughts = "Consider expanding this section."
 	e.canUndoEnhance = true
 
 	view := e.View(80, 30)

@@ -125,10 +125,6 @@ var (
 				PaddingLeft(1).
 				PaddingRight(1)
 
-	aiCorrectionStyle = lipgloss.NewStyle().
-				Foreground(colorAccent).
-				Bold(true)
-
 	// Cursor
 	mdCursorStyle = lipgloss.NewStyle().Reverse(true)
 

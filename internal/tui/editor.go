@@ -98,11 +98,9 @@ type Editor struct {
 	thoughtsRevealed int   // number of runes revealed so far
 	typewriterDone   bool  // true when fully revealed
 
-	// Correction summary
-	correctionSummary     string // brief description of what AI changed
-	redoCorrectedBody     string // stashed corrected body for redo after undo
-	redoCorrectionSummary string // stashed correction summary for redo
-	canRedoEnhance        bool   // true after undo, cleared on next edit
+	// Redo state
+	redoCorrectedBody string // stashed corrected body for redo after undo
+	canRedoEnhance    bool   // true after undo, cleared on next edit
 
 	// Enhance debounce readiness flag (checked by model.go)
 	enhanceReady bool
@@ -196,7 +194,6 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd, bool) {
 				repositionCursor(&e.body, row, col)
 				e.canUndoEnhance = true
 				e.canRedoEnhance = false
-				e.correctionSummary = e.redoCorrectionSummary
 				e.dirty = true
 				e.saved = false
 				e.lastEdit = time.Now()
@@ -216,12 +213,10 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd, bool) {
 				col := e.body.Column()
 				// Stash for redo
 				e.redoCorrectedBody = e.body.Value()
-				e.redoCorrectionSummary = e.correctionSummary
 				e.body.SetValue(e.preCorrectBody)
 				repositionCursor(&e.body, row, col)
 				e.canUndoEnhance = false
 				e.canRedoEnhance = true
-				e.correctionSummary = ""
 				e.dirty = true
 				e.saved = false
 				e.lastEdit = time.Now()
@@ -402,8 +397,6 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd, bool) {
 			repositionCursor(&e.body, row, col)
 			e.canUndoEnhance = true
 			e.lastReviewedBody = msg.correctedBody
-			// Build correction summary
-			e.correctionSummary = buildCorrectionSummary(e.preCorrectBody, msg.correctedBody)
 			// Mark dirty so corrections get saved
 			e.dirty = true
 			e.saved = false
@@ -417,7 +410,6 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd, bool) {
 		}
 		// Body changed during AI processing — update reviewed marker to current
 		e.lastReviewedBody = currentBody
-		e.correctionSummary = ""
 		if len(cmds) > 0 {
 			return e, tea.Batch(cmds...), false
 		}
@@ -516,7 +508,7 @@ func (e *Editor) View(width, height int) string {
 	// Thoughts section (if available)
 	var thoughtsStr string
 	thoughtsHeight := 0
-	if e.aiThoughts != "" || e.correctionSummary != "" {
+	if e.aiThoughts != "" {
 		thoughtsStr = e.renderThoughts(width - 4)
 		thoughtsHeight = lipgloss.Height(thoughtsStr)
 	}
@@ -1126,35 +1118,25 @@ func (e *Editor) undoLastCorrection() bool {
 
 // renderThoughts renders the AI thoughts/questions section in a bordered box.
 func (e *Editor) renderThoughts(width int) string {
-	if e.aiThoughts == "" && e.correctionSummary == "" {
+	if e.aiThoughts == "" {
 		return ""
+	}
+
+	thoughtsText := e.aiThoughts
+	if !e.typewriterDone && e.thoughtsTarget != "" {
+		thoughtsText += "▌" // blinking cursor during typewriter
 	}
 
 	var sections []string
 
-	// Correction summary line
-	if e.correctionSummary != "" {
-		corrLine := aiCorrectionStyle.Render("✎ " + e.correctionSummary)
-		if e.canUndoEnhance {
-			corrLine += "  " + helpStyle.Render("Ctrl+Z to undo")
-		}
-		sections = append(sections, corrLine)
+	// Undo/redo hints
+	if e.canUndoEnhance {
+		sections = append(sections, helpStyle.Render("Ctrl+Z to undo"))
 	} else if e.canRedoEnhance {
 		sections = append(sections, helpStyle.Render("Ctrl+Y to redo AI corrections"))
 	}
 
-	// Thoughts content with typewriter cursor
-	if e.aiThoughts != "" {
-		thoughtsText := e.aiThoughts
-		if !e.typewriterDone && e.thoughtsTarget != "" {
-			thoughtsText += "▌" // blinking cursor during typewriter
-		}
-		sections = append(sections, aiThoughtsStyle.Render(thoughtsText))
-	}
-
-	if len(sections) == 0 {
-		return ""
-	}
+	sections = append(sections, aiThoughtsStyle.Render(thoughtsText))
 
 	innerContent := lipgloss.JoinVertical(lipgloss.Left, sections...)
 
@@ -1221,43 +1203,3 @@ func (e *Editor) StartSpinner() tea.Cmd {
 	})
 }
 
-// buildCorrectionSummary creates a brief description of what changed between old and new text.
-func buildCorrectionSummary(old, new string) string {
-	oldWords := strings.Fields(old)
-	newWords := strings.Fields(new)
-
-	// Find changed words (simple diff)
-	changes := 0
-	maxLen := len(oldWords)
-	if len(newWords) > maxLen {
-		maxLen = len(newWords)
-	}
-	var examples []string
-	for i := 0; i < maxLen && changes < 3; i++ {
-		var ow, nw string
-		if i < len(oldWords) {
-			ow = oldWords[i]
-		}
-		if i < len(newWords) {
-			nw = newWords[i]
-		}
-		if ow != nw && ow != "" && nw != "" {
-			changes++
-			examples = append(examples, fmt.Sprintf("%s → %s", ow, nw))
-		} else if ow != nw {
-			changes++
-		}
-	}
-
-	if len(examples) == 0 {
-		if changes > 0 {
-			return fmt.Sprintf("AI made %d correction(s)", changes)
-		}
-		return ""
-	}
-	summary := strings.Join(examples, ", ")
-	if changes > len(examples) {
-		summary += fmt.Sprintf(" (+%d more)", changes-len(examples))
-	}
-	return summary
-}
