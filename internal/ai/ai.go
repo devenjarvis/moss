@@ -1,16 +1,30 @@
 package ai
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 
 	"github.com/devenjarvis/moss/internal/note"
 	"gopkg.in/yaml.v3"
 )
+
+// filterEnv returns a copy of os.Environ() with the named variable removed.
+func filterEnv(name string) []string {
+	prefix := name + "="
+	var result []string
+	for _, e := range os.Environ() {
+		if !strings.HasPrefix(e, prefix) {
+			result = append(result, e)
+		}
+	}
+	return result
+}
 
 // EnhanceResult holds the output of an AI note enhancement.
 type EnhanceResult struct {
@@ -52,6 +66,7 @@ func RunClaude(ctx context.Context, model, prompt, stdin string) (string, error)
 
 	cmd := exec.CommandContext(ctx, "claude", args...)
 	cmd.Stdin = strings.NewReader(stdin) // always set stdin to prevent inheriting terminal
+	cmd.Env = filterEnv("CLAUDECODE")    // prevent "nested session" errors
 	setSysProcAttr(cmd)                  // detach from controlling terminal (unix only)
 
 	var stdout, stderr bytes.Buffer
@@ -175,8 +190,249 @@ Then write the note body in clean markdown.`, userPrompt)
 	return RunClaude(ctx, ModelSonnet, prompt, sourceNotes)
 }
 
+// StreamEvent represents a chunk of streaming output from AI enhancement.
+type StreamEvent struct {
+	// ThoughtsDelta contains new text to append to the thoughts display.
+	// Empty when the event is a completion or body event.
+	ThoughtsDelta string
+
+	// CorrectedBody is set only in the final event when streaming is complete.
+	CorrectedBody string
+
+	// Done is true for the final event.
+	Done bool
+
+	// Err is set if the stream encountered an error.
+	Err error
+}
+
+// enhanceDelimiter separates thoughts from corrected body in streaming output.
+const enhanceDelimiter = "===CORRECTED==="
+
+// EnhanceStream starts a streaming AI enhancement and returns a channel of events.
+// Thoughts are streamed as they arrive; the corrected body is sent in the final event.
+func EnhanceStream(ctx context.Context, body string, diff string) <-chan StreamEvent {
+	ch := make(chan StreamEvent, 16)
+
+	prompt := fmt.Sprintf(`You are an editing assistant for a note-taking app. You will receive a markdown note body via stdin.
+
+Your job:
+1. First, provide 1-3 brief thoughts or questions about the note that might prompt the writer to expand, clarify, or think deeper. These should be conversational and helpful.
+2. Then output the exact delimiter line: %s
+3. Then output the corrected note body. Fix ONLY spelling, grammar, punctuation, and formatting errors. Do NOT add new content, change the meaning, restructure sections, or remove anything. Preserve all markdown formatting exactly. If there are no corrections needed, output the body unchanged.
+
+Recent changes (diff) for context:
+%s
+
+Output format (no markdown fences, no extra text):
+<your thoughts>
+%s
+<corrected body>`, enhanceDelimiter, diff, enhanceDelimiter)
+
+	go func() {
+		defer close(ch)
+
+		args := []string{"-p", prompt, "--output-format", "stream-json", "--verbose", "--include-partial-messages"}
+		args = append(args, "--model", ModelHaiku)
+
+		cmd := exec.CommandContext(ctx, "claude", args...)
+		cmd.Stdin = strings.NewReader(body)
+		// Clear CLAUDECODE env var to prevent "nested session" errors
+		cmd.Env = filterEnv("CLAUDECODE")
+		setSysProcAttr(cmd)
+
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			ch <- StreamEvent{Err: fmt.Errorf("enhance stream: %w", err)}
+			return
+		}
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+
+		if err := cmd.Start(); err != nil {
+			ch <- StreamEvent{Err: fmt.Errorf("enhance stream: %w", err)}
+			return
+		}
+
+		scanner := bufio.NewScanner(stdout)
+		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+
+		// We accumulate the full generated text ourselves so we can handle
+		// both incremental deltas (content_block_delta) and accumulated
+		// snapshots (assistant messages) from the CLI.
+		var accumulated strings.Builder
+		var thoughtsSent int
+		delimiterFound := false
+
+		for scanner.Scan() {
+			line := scanner.Text()
+
+			// Try incremental delta first (content_block_delta events).
+			// These arrive token-by-token and are the real streaming path.
+			if delta := extractStreamDelta(line); delta != "" {
+				accumulated.WriteString(delta)
+				fullText := accumulated.String()
+
+				if delimiterFound {
+					continue
+				}
+				if idx := strings.Index(fullText, enhanceDelimiter); idx >= 0 {
+					thoughtsPortion := fullText[:idx]
+					if len(thoughtsPortion) > thoughtsSent {
+						ch <- StreamEvent{ThoughtsDelta: thoughtsPortion[thoughtsSent:]}
+					}
+					delimiterFound = true
+					continue
+				}
+				if len(fullText) > thoughtsSent {
+					ch <- StreamEvent{ThoughtsDelta: fullText[thoughtsSent:]}
+					thoughtsSent = len(fullText)
+				}
+				continue
+			}
+
+			// Fall back to accumulated text from assistant/result messages.
+			// This handles the case where partial messages aren't available.
+			if snapshot := extractTextSnapshot(line); snapshot != "" {
+				if snapshot == accumulated.String() {
+					continue
+				}
+				accumulated.Reset()
+				accumulated.WriteString(snapshot)
+				fullText := snapshot
+
+				if delimiterFound {
+					continue
+				}
+				if idx := strings.Index(fullText, enhanceDelimiter); idx >= 0 {
+					thoughtsPortion := fullText[:idx]
+					if len(thoughtsPortion) > thoughtsSent {
+						ch <- StreamEvent{ThoughtsDelta: thoughtsPortion[thoughtsSent:]}
+					}
+					delimiterFound = true
+					continue
+				}
+				if len(fullText) > thoughtsSent {
+					ch <- StreamEvent{ThoughtsDelta: fullText[thoughtsSent:]}
+					thoughtsSent = len(fullText)
+				}
+			}
+		}
+
+		if err := cmd.Wait(); err != nil {
+			ch <- StreamEvent{Err: fmt.Errorf("enhance stream: %w: %s", err, stderr.String())}
+			return
+		}
+
+		// Extract corrected body from the final accumulated text
+		var correctedBody string
+		fullText := accumulated.String()
+		if idx := strings.Index(fullText, enhanceDelimiter); idx >= 0 {
+			if !delimiterFound {
+				// Delimiter found only in final text — send unsent thoughts
+				thoughtsPortion := fullText[:idx]
+				if len(thoughtsPortion) > thoughtsSent {
+					ch <- StreamEvent{ThoughtsDelta: thoughtsPortion[thoughtsSent:]}
+				}
+			}
+			correctedBody = strings.TrimSpace(fullText[idx+len(enhanceDelimiter):])
+		}
+
+		ch <- StreamEvent{
+			CorrectedBody: correctedBody,
+			Done:          true,
+		}
+	}()
+
+	return ch
+}
+
+// streamEventType extracts just the "type" field from a JSON line.
+type streamEventType struct {
+	Type string `json:"type"`
+}
+
+// extractStreamDelta extracts incremental text from content_block_delta events.
+// The CLI wraps raw API events in {"type":"stream_event","event":{...}}, so we
+// unwrap that envelope first. Returns empty string for non-delta events.
+func extractStreamDelta(line string) string {
+	var outer struct {
+		Type  string          `json:"type"`
+		Event json.RawMessage `json:"event"`
+	}
+	if err := json.Unmarshal([]byte(line), &outer); err != nil {
+		return ""
+	}
+
+	// Unwrap stream_event envelope if present
+	eventJSON := []byte(line)
+	if outer.Type == "stream_event" && len(outer.Event) > 0 {
+		eventJSON = outer.Event
+	}
+
+	var evt streamEventType
+	if err := json.Unmarshal(eventJSON, &evt); err != nil {
+		return ""
+	}
+	if evt.Type != "content_block_delta" {
+		return ""
+	}
+	var delta struct {
+		Delta struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"delta"`
+	}
+	if err := json.Unmarshal(eventJSON, &delta); err != nil {
+		return ""
+	}
+	if delta.Delta.Type == "text_delta" {
+		return delta.Delta.Text
+	}
+	return ""
+}
+
+// extractTextSnapshot extracts the full accumulated text from assistant or
+// result messages. These serve as snapshots of all text generated so far.
+// Returns empty string for non-matching events.
+func extractTextSnapshot(line string) string {
+	var evt streamEventType
+	if err := json.Unmarshal([]byte(line), &evt); err != nil {
+		return ""
+	}
+	if evt.Type == "assistant" {
+		var msg struct {
+			Message *struct {
+				Content []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"message"`
+		}
+		if err := json.Unmarshal([]byte(line), &msg); err == nil && msg.Message != nil {
+			var sb strings.Builder
+			for _, c := range msg.Message.Content {
+				if c.Type == "text" {
+					sb.WriteString(c.Text)
+				}
+			}
+			return sb.String()
+		}
+	}
+	if evt.Type == "result" {
+		var msg struct {
+			Result string `json:"result"`
+		}
+		if err := json.Unmarshal([]byte(line), &msg); err == nil && msg.Result != "" {
+			return msg.Result
+		}
+	}
+	return ""
+}
+
 // Enhance sends a note body to Haiku for spelling/grammar corrections and
 // returns the corrected body along with brief thoughts/questions about the note.
+// This is the non-streaming version kept as fallback.
 func Enhance(ctx context.Context, body string, diff string) (EnhanceResult, error) {
 	prompt := fmt.Sprintf(`You are an editing assistant for a note-taking app. You will receive a markdown note body via stdin.
 

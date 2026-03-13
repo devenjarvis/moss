@@ -110,14 +110,16 @@ var (
 	mdHRuleStyle      = lipgloss.NewStyle().Foreground(colorMuted)
 
 	// AI thoughts
-	aiThoughtsLabelStyle = lipgloss.NewStyle().
-				Foreground(colorSecondary).
-				Italic(true)
-
 	aiThoughtsStyle = lipgloss.NewStyle().
 			Foreground(colorMuted).
 			Italic(true).
-			PaddingLeft(2)
+			PaddingLeft(1)
+
+	aiThoughtsBoxStyle = lipgloss.NewStyle().
+				BorderStyle(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color("#9333EA")). // vivid purple
+				PaddingLeft(1).
+				PaddingRight(1)
 
 	// Cursor
 	mdCursorStyle = lipgloss.NewStyle().Reverse(true)

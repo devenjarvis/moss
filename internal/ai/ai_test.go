@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -298,6 +299,154 @@ func TestSuggestTagsParsing(t *testing.T) {
 				t.Errorf("got %d tags, want %d: %v", len(tags), tt.want, tags)
 			}
 		})
+	}
+}
+
+func TestExtractStreamDelta(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+		want string
+	}{
+		{
+			"stream_event wrapped text_delta",
+			`{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Hello"}},"session_id":"abc"}`,
+			"Hello",
+		},
+		{
+			"stream_event wrapped thinking_delta",
+			`{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"hmm"}},"session_id":"abc"}`,
+			"",
+		},
+		{
+			"unwrapped content_block_delta (backwards compat)",
+			`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}`,
+			"Hi",
+		},
+		{
+			"assistant message (not a delta)",
+			`{"type":"assistant","message":{"content":[{"type":"text","text":"Hello world"}]}}`,
+			"",
+		},
+		{
+			"stream_event non-delta (message_start)",
+			`{"type":"stream_event","event":{"type":"message_start","message":{"model":"haiku"}},"session_id":"abc"}`,
+			"",
+		},
+		{
+			"invalid json",
+			`not json`,
+			"",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractStreamDelta(tt.line)
+			if got != tt.want {
+				t.Errorf("extractStreamDelta() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExtractTextSnapshot(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+		want string
+	}{
+		{
+			"assistant message with text",
+			`{"type":"assistant","message":{"content":[{"type":"text","text":"Hello world"}]}}`,
+			"Hello world",
+		},
+		{
+			"assistant with multiple content blocks",
+			`{"type":"assistant","message":{"content":[{"type":"text","text":"Hello "},{"type":"text","text":"world"}]}}`,
+			"Hello world",
+		},
+		{
+			"result message",
+			`{"type":"result","result":"Final text here"}`,
+			"Final text here",
+		},
+		{
+			"system init message",
+			`{"type":"system","subtype":"init","session_id":"abc"}`,
+			"",
+		},
+		{
+			"content_block_delta (not a snapshot)",
+			`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}`,
+			"",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractTextSnapshot(tt.line)
+			if got != tt.want {
+				t.Errorf("extractTextSnapshot() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStreamDelta_AccumulatedChunks(t *testing.T) {
+	// Simulate a real streaming sequence with stream_event wrapped deltas
+	messages := []string{
+		`{"type":"system","subtype":"init"}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Great "}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"note! "}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Consider"}}}`,
+		`{"type":"result","result":"Great note! Consider"}`,
+	}
+
+	var accumulated strings.Builder
+	var thoughtsSent int
+	var chunks []string
+
+	for _, line := range messages {
+		if delta := extractStreamDelta(line); delta != "" {
+			accumulated.WriteString(delta)
+			fullText := accumulated.String()
+			if len(fullText) > thoughtsSent {
+				chunks = append(chunks, fullText[thoughtsSent:])
+				thoughtsSent = len(fullText)
+			}
+			continue
+		}
+		if snapshot := extractTextSnapshot(line); snapshot != "" {
+			if snapshot != accumulated.String() {
+				accumulated.Reset()
+				accumulated.WriteString(snapshot)
+			}
+		}
+	}
+
+	if got := strings.Join(chunks, ""); got != "Great note! Consider" {
+		t.Errorf("accumulated chunks = %q, want %q", got, "Great note! Consider")
+	}
+	if len(chunks) != 3 {
+		t.Errorf("got %d chunks, want 3: %v", len(chunks), chunks)
+	}
+}
+
+func TestStreamEventTypes(t *testing.T) {
+	// Verify StreamEvent fields work correctly
+	chunk := StreamEvent{ThoughtsDelta: "Hello "}
+	if chunk.ThoughtsDelta != "Hello " {
+		t.Errorf("ThoughtsDelta = %q, want %q", chunk.ThoughtsDelta, "Hello ")
+	}
+	if chunk.Done {
+		t.Error("chunk should not be done")
+	}
+
+	complete := StreamEvent{CorrectedBody: "Fixed text", Done: true}
+	if !complete.Done {
+		t.Error("complete event should be done")
+	}
+	if complete.CorrectedBody != "Fixed text" {
+		t.Errorf("CorrectedBody = %q, want %q", complete.CorrectedBody, "Fixed text")
 	}
 }
 

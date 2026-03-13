@@ -9,6 +9,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/devenjarvis/moss/internal/ai"
 	"github.com/devenjarvis/moss/internal/autocorrect"
 	"github.com/devenjarvis/moss/internal/db"
 	"github.com/devenjarvis/moss/internal/note"
@@ -766,18 +767,18 @@ func TestEditor_SmartEnter_MarksDirty(t *testing.T) {
 
 // --- AI Enhancement tests ---
 
-func TestEditor_EnhanceMsg_AppliesCorrections(t *testing.T) {
+func TestEditor_EnhanceComplete_AppliesCorrections(t *testing.T) {
 	e, _ := newTestEditor(t)
 	e.body.SetValue("Helo wrold")
 	e.bodyAtRequest = "Helo wrold" // simulate that request was sent with this body
+	e.enhancePending = true
 
-	e, cmd, shouldClose := e.Update(editorEnhanceMsg{
+	e, cmd, shouldClose := e.Update(editorEnhanceCompleteMsg{
 		correctedBody: "Hello world",
-		thoughts:      "Consider expanding on your greeting.",
 	})
 
 	if shouldClose {
-		t.Error("enhance msg should not close editor")
+		t.Error("enhance complete msg should not close editor")
 	}
 	if e.body.Value() != "Hello world" {
 		t.Errorf("body = %q, want %q", e.body.Value(), "Hello world")
@@ -788,11 +789,8 @@ func TestEditor_EnhanceMsg_AppliesCorrections(t *testing.T) {
 	if e.preCorrectBody != "Helo wrold" {
 		t.Errorf("preCorrectBody = %q, want %q", e.preCorrectBody, "Helo wrold")
 	}
-	if e.aiThoughts != "Consider expanding on your greeting." {
-		t.Errorf("aiThoughts = %q, want %q", e.aiThoughts, "Consider expanding on your greeting.")
-	}
 	if e.enhancePending {
-		t.Error("enhancePending should be false after receiving enhance msg")
+		t.Error("enhancePending should be false after receiving enhance complete msg")
 	}
 	if !e.dirty {
 		t.Error("should be dirty after corrections applied")
@@ -803,23 +801,19 @@ func TestEditor_EnhanceMsg_AppliesCorrections(t *testing.T) {
 	}
 }
 
-func TestEditor_EnhanceMsg_SkipsIfBodyChanged(t *testing.T) {
+func TestEditor_EnhanceComplete_SkipsIfBodyChanged(t *testing.T) {
 	e, _ := newTestEditor(t)
 	e.body.SetValue("Current body text")
 	e.bodyAtRequest = "Old body text" // body changed since request
+	e.enhancePending = true
 
-	e, _, _ = e.Update(editorEnhanceMsg{
+	e, _, _ = e.Update(editorEnhanceCompleteMsg{
 		correctedBody: "Old body corrected",
-		thoughts:      "Some thoughts.",
 	})
 
 	// Body should NOT be changed
 	if e.body.Value() != "Current body text" {
 		t.Errorf("body should not change, got %q", e.body.Value())
-	}
-	// But thoughts should still be updated
-	if e.aiThoughts != "Some thoughts." {
-		t.Errorf("aiThoughts = %q, want %q", e.aiThoughts, "Some thoughts.")
 	}
 	if e.canUndoEnhance {
 		t.Error("canUndoEnhance should be false when corrections not applied")
@@ -830,12 +824,12 @@ func TestEditor_EnhanceMsg_SkipsIfBodyChanged(t *testing.T) {
 	}
 }
 
-func TestEditor_EnhanceMsg_IgnoresErrors(t *testing.T) {
+func TestEditor_EnhanceComplete_IgnoresErrors(t *testing.T) {
 	e, _ := newTestEditor(t)
 	e.enhancePending = true
 	originalBody := e.body.Value()
 
-	e, _, _ = e.Update(editorEnhanceMsg{
+	e, _, _ = e.Update(editorEnhanceCompleteMsg{
 		err: fmt.Errorf("claude not found"),
 	})
 
@@ -845,33 +839,47 @@ func TestEditor_EnhanceMsg_IgnoresErrors(t *testing.T) {
 	if e.enhancePending {
 		t.Error("enhancePending should be cleared on error")
 	}
-	if e.aiThoughts != "" {
-		t.Error("thoughts should not be set on error")
-	}
 }
 
-func TestEditor_EnhanceMsg_SkipsIdenticalBody(t *testing.T) {
+func TestEditor_EnhanceComplete_SkipsIdenticalBody(t *testing.T) {
 	e, _ := newTestEditor(t)
 	body := "Already correct text."
 	e.body.SetValue(body)
 	e.bodyAtRequest = body
+	e.enhancePending = true
 
-	e, cmd, _ := e.Update(editorEnhanceMsg{
+	e, _, _ = e.Update(editorEnhanceCompleteMsg{
 		correctedBody: body, // same as current
-		thoughts:      "Looks good!",
 	})
 
-	// Should NOT apply (body identical) but should update thoughts
+	// Should NOT apply (body identical)
 	if e.canUndoEnhance {
 		t.Error("should not set canUndoEnhance when body is identical")
 	}
-	if e.aiThoughts != "Looks good!" {
-		t.Errorf("aiThoughts = %q, want %q", e.aiThoughts, "Looks good!")
+}
+
+func TestEditor_EnhanceChunk_AppendsThoughts(t *testing.T) {
+	e, _ := newTestEditor(t)
+
+	// Create a channel to simulate streaming
+	ch := make(chan ai.StreamEvent, 1)
+
+	e, cmd, _ := e.Update(editorEnhanceChunkMsg{
+		delta: "Consider ",
+		ch:    ch,
+	})
+
+	if e.aiThoughts != "Consider " {
+		t.Errorf("aiThoughts = %q, want %q", e.aiThoughts, "Consider ")
 	}
-	// No auto-save tick needed since body didn't change
-	if cmd != nil {
-		t.Error("should not return command when body is identical")
+	if !e.streamingThoughts {
+		t.Error("streamingThoughts should be true during streaming")
 	}
+	// Should return a command to read the next chunk
+	if cmd == nil {
+		t.Error("should return command to read next chunk")
+	}
+	close(ch)
 }
 
 func TestEditor_CtrlZ_UndoEnhance(t *testing.T) {
@@ -967,9 +975,6 @@ func TestEditor_View_ShowsThoughts(t *testing.T) {
 	e.aiThoughts = "What about adding examples?"
 
 	view := e.View(80, 30)
-	if !strings.Contains(view, "AI thoughts") {
-		t.Error("view should contain 'AI thoughts' label when thoughts are set")
-	}
 	if !strings.Contains(view, "What about adding examples?") {
 		t.Error("view should contain the thoughts content")
 	}
@@ -987,7 +992,7 @@ func TestEditor_View_NoThoughtsWhenEmpty(t *testing.T) {
 
 func TestEditor_View_ShowsUndoHint(t *testing.T) {
 	e, _ := newTestEditor(t)
-	e.aiThoughts = "Some thought"
+	e.aiThoughts = "Consider expanding this section."
 	e.canUndoEnhance = true
 
 	view := e.View(80, 30)
