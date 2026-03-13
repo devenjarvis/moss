@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -340,6 +341,40 @@ func TestExtractTextContent(t *testing.T) {
 				t.Errorf("extractTextContent() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestExtractTextContent_AccumulatedPartials(t *testing.T) {
+	// Simulate a sequence of partial messages with accumulated text
+	// This tests the pattern used in EnhanceStream
+	messages := []string{
+		`{"type":"system","subtype":"init"}`,
+		`{"type":"assistant","message":{"content":[{"type":"text","text":"Great "}]}}`,
+		`{"type":"assistant","message":{"content":[{"type":"text","text":"Great note! "}]}}`,
+		`{"type":"assistant","message":{"content":[{"type":"text","text":"Great note! Consider"}]}}`,
+	}
+
+	var lastText string
+	var thoughtsSent int
+	var chunks []string
+
+	for _, line := range messages {
+		fullText := extractTextContent(line)
+		if fullText == "" || fullText == lastText {
+			continue
+		}
+		lastText = fullText
+		if len(fullText) > thoughtsSent {
+			chunks = append(chunks, fullText[thoughtsSent:])
+			thoughtsSent = len(fullText)
+		}
+	}
+
+	if got := strings.Join(chunks, ""); got != "Great note! Consider" {
+		t.Errorf("accumulated chunks = %q, want %q", got, "Great note! Consider")
+	}
+	if len(chunks) != 3 {
+		t.Errorf("got %d chunks, want 3", len(chunks))
 	}
 }
 

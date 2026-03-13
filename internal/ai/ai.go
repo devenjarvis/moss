@@ -6,12 +6,25 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 
 	"github.com/devenjarvis/moss/internal/note"
 	"gopkg.in/yaml.v3"
 )
+
+// filterEnv returns a copy of os.Environ() with the named variable removed.
+func filterEnv(name string) []string {
+	prefix := name + "="
+	var result []string
+	for _, e := range os.Environ() {
+		if !strings.HasPrefix(e, prefix) {
+			result = append(result, e)
+		}
+	}
+	return result
+}
 
 // EnhanceResult holds the output of an AI note enhancement.
 type EnhanceResult struct {
@@ -53,6 +66,7 @@ func RunClaude(ctx context.Context, model, prompt, stdin string) (string, error)
 
 	cmd := exec.CommandContext(ctx, "claude", args...)
 	cmd.Stdin = strings.NewReader(stdin) // always set stdin to prevent inheriting terminal
+	cmd.Env = filterEnv("CLAUDECODE")    // prevent "nested session" errors
 	setSysProcAttr(cmd)                  // detach from controlling terminal (unix only)
 
 	var stdout, stderr bytes.Buffer
@@ -223,6 +237,8 @@ Output format (no markdown fences, no extra text):
 
 		cmd := exec.CommandContext(ctx, "claude", args...)
 		cmd.Stdin = strings.NewReader(body)
+		// Clear CLAUDECODE env var to prevent "nested session" errors
+		cmd.Env = filterEnv("CLAUDECODE")
 		setSysProcAttr(cmd)
 
 		stdout, err := cmd.StdoutPipe()
@@ -230,19 +246,23 @@ Output format (no markdown fences, no extra text):
 			ch <- StreamEvent{Err: fmt.Errorf("enhance stream: %w", err)}
 			return
 		}
-		cmd.Stderr = &bytes.Buffer{} // discard stderr
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
 
 		if err := cmd.Start(); err != nil {
 			ch <- StreamEvent{Err: fmt.Errorf("enhance stream: %w", err)}
 			return
 		}
 
-		var lastText string // tracks accumulated text from partial messages
-		inBody := false
-		var bodyBuf strings.Builder
+		var thoughtsSent int // how many bytes of thoughts we've already sent
+		delimiterFound := false
 		scanner := bufio.NewScanner(stdout)
 		// Increase scanner buffer for large responses
 		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+
+		// Each partial message contains the FULL accumulated text so far.
+		// We track how much thoughts text we've sent and detect the delimiter.
+		var lastText string
 
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -250,42 +270,51 @@ Output format (no markdown fences, no extra text):
 			if fullText == "" || fullText == lastText {
 				continue
 			}
-
-			// Compute the delta (new text since last partial message)
-			delta := fullText
-			if strings.HasPrefix(fullText, lastText) {
-				delta = fullText[len(lastText):]
-			}
 			lastText = fullText
 
-			if inBody {
-				bodyBuf.WriteString(delta)
+			if delimiterFound {
+				// Already past delimiter — body is growing, just keep lastText updated
 				continue
 			}
 
 			// Check if delimiter has appeared in accumulated text
 			if idx := strings.Index(fullText, enhanceDelimiter); idx >= 0 {
-				inBody = true
-				after := fullText[idx+len(enhanceDelimiter):]
-				bodyBuf.WriteString(strings.TrimLeft(after, "\n"))
+				// Send any unsent thoughts before the delimiter
+				thoughtsPortion := fullText[:idx]
+				if len(thoughtsPortion) > thoughtsSent {
+					ch <- StreamEvent{ThoughtsDelta: thoughtsPortion[thoughtsSent:]}
+				}
+				delimiterFound = true
 				continue
 			}
-			// Stream thoughts delta to the UI
-			if delta != "" {
-				ch <- StreamEvent{ThoughtsDelta: delta}
+
+			// Stream new thoughts since last partial message
+			if len(fullText) > thoughtsSent {
+				ch <- StreamEvent{ThoughtsDelta: fullText[thoughtsSent:]}
+				thoughtsSent = len(fullText)
 			}
 		}
 
 		if err := cmd.Wait(); err != nil {
-			ch <- StreamEvent{Err: fmt.Errorf("enhance stream: %w", err)}
+			ch <- StreamEvent{Err: fmt.Errorf("enhance stream: %w: %s", err, stderr.String())}
 			return
 		}
 
-		// Parse final result
-		correctedBody := strings.TrimSpace(bodyBuf.String())
-		if !inBody {
-			// Delimiter never appeared — treat entire output as thoughts, no corrections
-			correctedBody = ""
+		// Extract corrected body from the final accumulated text
+		var correctedBody string
+		if delimiterFound {
+			if idx := strings.Index(lastText, enhanceDelimiter); idx >= 0 {
+				correctedBody = strings.TrimSpace(lastText[idx+len(enhanceDelimiter):])
+			}
+		} else if lastText != "" {
+			// Delimiter never appeared during streaming; try the final text
+			if idx := strings.Index(lastText, enhanceDelimiter); idx >= 0 {
+				thoughtsPortion := lastText[:idx]
+				if len(thoughtsPortion) > thoughtsSent {
+					ch <- StreamEvent{ThoughtsDelta: thoughtsPortion[thoughtsSent:]}
+				}
+				correctedBody = strings.TrimSpace(lastText[idx+len(enhanceDelimiter):])
+			}
 		}
 
 		ch <- StreamEvent{
