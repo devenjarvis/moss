@@ -31,8 +31,25 @@ This is a Go TUI app using Bubble Tea. It is a fast, fully local note-taking too
 - `cmd/moss/main.go` — CLI entry point, subcommand dispatch, TUI startup
 - `internal/tui/model.go` — Main Bubble Tea model, two-pane layout (list, preview), all key handling
 - `internal/tui/editor.go` — In-app note editor with live markdown rendering and smart list continuation
-- `internal/tui/styles.go` — Lip Gloss styles and color palette
+- `internal/tui/theme.go` — Design tokens: color palette, spacing, borders, glyphs (the only place raw hex/glyphs live)
+- `internal/tui/styles.go` — Named Lip Gloss styles composed from tokens
+- `internal/tui/component.go` — Reusable UI components (pane, list item, status bar, modal)
 - `internal/tui/markdown_renderer.go` — Markdown rendering for the preview and editor
+
+## Design System
+
+`docs/DESIGN.md` is the single source of truth for moss's UI. **Read it before
+touching anything visual.** The UI is layered — tokens (`theme.go`) → styles
+(`styles.go`) → components (`component.go`) → screens (`model.go`, `editor.go`) —
+and each layer may only depend on the ones above it. Enforced rules:
+
+- Raw hex colors and glyphs live **only** in `theme.go`. Reference semantic
+  tokens (`colorPrimary`, `colorMuted`, `glyphCursor`, …) everywhere else.
+- `lipgloss.NewStyle()` is called **only** in `styles.go` / `component.go`.
+  Screens reference named styles — never build styles inline.
+- Screens assemble components; they do not draw borders, pad, gap-fill, or
+  truncate by hand. Add a component for any UI element used more than once.
+- When you change the design system, update `docs/DESIGN.md` in the same change.
 - `internal/autocorrect/autocorrect.go` — Lightweight, fully local autocorrect (no network)
 - `internal/note/note.go` — Note struct, YAML frontmatter parsing, file I/O
 - `internal/db/db.go` — SQLite database with FTS5, uses `ncruces/go-sqlite3` (pure Go, no CGo)

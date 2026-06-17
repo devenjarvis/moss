@@ -289,18 +289,18 @@ func (e *Editor) View(width, height int) string {
 	row1 := titleLabel + e.titleInput.View()
 	row2 := tagsLabel + e.tagsInput.View() + "  " + dateLabel + e.dateInput.View()
 
-	separator := editorSeparatorStyle.Render(strings.Repeat("─", width-4))
+	separator := editorSeparatorStyle.Render(strings.Repeat(glyphRule, width-4))
 
 	// Status line
 	var status string
 	if e.saving {
 		status = editorDirtyStyle.Render("saving...")
 	} else if e.dirty {
-		status = editorDirtyStyle.Render("● modified")
+		status = editorDirtyStyle.Render(glyphDirty + " modified")
 	} else if e.saved {
-		status = editorSavedStyle.Render("✓ saved")
+		status = editorSavedStyle.Render(glyphSaved + " saved")
 	} else {
-		status = helpStyle.Render("Tab: indent  Shift+Tab: outdent  Ctrl+M: frontmatter  Esc: save & close  Ctrl+S: save  ⌘B/I: bold/italic  ⌘1-3: heading")
+		status = keyHint("Tab: indent  Shift+Tab: outdent  Ctrl+M: frontmatter  Esc: save & close  Ctrl+S: save  ⌘B/I: bold/italic  ⌘1-3: heading")
 	}
 
 	// Body takes remaining space

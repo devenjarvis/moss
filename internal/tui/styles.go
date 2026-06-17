@@ -2,56 +2,67 @@ package tui
 
 import "charm.land/lipgloss/v2"
 
-var (
-	// Colors
-	colorPrimary   = lipgloss.Color("#7C3AED") // purple
-	colorSecondary = lipgloss.Color("#06B6D4") // cyan
-	colorMuted     = lipgloss.Color("#6B7280") // gray
-	colorFg        = lipgloss.Color("#CDD6F4") // light text
-	colorAccent    = lipgloss.Color("#A6E3A1") // green
-	colorWarning   = lipgloss.Color("#F9E2AF") // yellow
+// styles.go holds named lipgloss styles composed from the design tokens in
+// theme.go. This is the only place (besides component.go) that calls
+// lipgloss.NewStyle(); screens reference these names. See docs/DESIGN.md.
 
-	// Pane styles
+var (
+	// --- Panes ---
 	paneStyle = lipgloss.NewStyle().
-			BorderStyle(lipgloss.RoundedBorder()).
-			BorderForeground(colorMuted).
-			Padding(0, 1)
+			BorderStyle(paneBorder).
+			BorderForeground(colorBorder).
+			Padding(0, spacePanePadX)
 
 	activePaneStyle = lipgloss.NewStyle().
-			BorderStyle(lipgloss.RoundedBorder()).
-			BorderForeground(colorPrimary).
-			Padding(0, 1)
+			BorderStyle(paneBorder).
+			BorderForeground(colorBorderFocus).
+			Padding(0, spacePanePadX)
 
-	// Title bar
+	// Pane title bar
 	titleStyle = lipgloss.NewStyle().
 			Bold(true).
 			Foreground(colorPrimary).
-			Padding(0, 1)
+			Padding(0, spacePanePadX)
 
-	// List items
+	// --- List items ---
 	selectedItemStyle = lipgloss.NewStyle().
 				Foreground(colorPrimary).
 				Bold(true)
 
 	normalItemStyle = lipgloss.NewStyle().
-			Foreground(colorFg)
+			Foreground(colorText)
 
-	// Status bar
+	// --- Status bar ---
 	statusBarStyle = lipgloss.NewStyle().
 			Foreground(colorMuted).
-			Padding(0, 1)
+			Padding(0, spacePanePadX)
 
 	statusActiveStyle = lipgloss.NewStyle().
-				Foreground(colorAccent).
+				Foreground(colorSuccess).
 				Bold(true)
 
-	// Help
+	// Metadata chips in the status bar (tag:, project:, vN available).
+	metaChipStyle = lipgloss.NewStyle().Foreground(colorSecondary)
+	// De-emphasized chip (sort: indicator).
+	metaSortStyle = lipgloss.NewStyle().Foreground(colorMuted)
+
+	// --- Help / key hints ---
 	helpStyle = lipgloss.NewStyle().
 			Foreground(colorMuted)
 
-	// Todos
+	// Help modal rows
+	helpSectionStyle = lipgloss.NewStyle().Bold(true).Foreground(colorPrimary)
+	helpKeyStyle     = lipgloss.NewStyle().Foreground(colorSecondary)
+	helpDescStyle    = lipgloss.NewStyle().Foreground(colorText)
+
+	// --- Input prompts (list pane) ---
+	newNoteLabelStyle   = lipgloss.NewStyle().Foreground(colorSuccess)
+	tagFilterLabelStyle = lipgloss.NewStyle().Foreground(colorSecondary)
+	confirmPromptStyle  = lipgloss.NewStyle().Foreground(colorWarning).Bold(true)
+
+	// --- Todos ---
 	todoDoneStyle = lipgloss.NewStyle().
-			Foreground(colorAccent) // green for [x]
+			Foreground(colorSuccess) // green for [x]
 
 	todoOpenStyle = lipgloss.NewStyle().
 			Foreground(colorWarning) // yellow for [ ]
@@ -59,12 +70,19 @@ var (
 	todoSourceStyle = lipgloss.NewStyle().
 			Foreground(colorMuted) // gray for source note name
 
-	// Search highlighting
+	// --- Search highlighting ---
 	searchMatchStyle = lipgloss.NewStyle().
 				Background(colorWarning).
-				Foreground(lipgloss.Color("#1E1E2E"))
+				Foreground(colorInverse)
 
-	// Editor
+	// --- Modal / dialog ---
+	dialogStyle = lipgloss.NewStyle().
+			Foreground(colorText).
+			BorderStyle(paneBorder).
+			BorderForeground(colorPrimary).
+			Padding(1, 2)
+
+	// --- Editor ---
 	editorLabelStyle = lipgloss.NewStyle().
 				Foreground(colorSecondary).
 				Bold(true)
@@ -77,12 +95,12 @@ var (
 				Bold(true)
 
 	editorSavedStyle = lipgloss.NewStyle().
-				Foreground(colorAccent)
+				Foreground(colorSuccess)
 
-	// Markdown heading styles
+	// --- Markdown heading styles ---
 	mdH1Style = lipgloss.NewStyle().Bold(true).Foreground(colorPrimary)
 	mdH2Style = lipgloss.NewStyle().Bold(true).Foreground(colorSecondary)
-	mdH3Style = lipgloss.NewStyle().Bold(true).Foreground(colorFg)
+	mdH3Style = lipgloss.NewStyle().Bold(true).Foreground(colorText)
 	mdH4Style = lipgloss.NewStyle().Bold(true)
 
 	// Dimmed markers (**, *, `, #)
@@ -94,21 +112,22 @@ var (
 	mdBoldItalicStyle = lipgloss.NewStyle().Bold(true).Italic(true)
 
 	// Code styles
-	mdCodeStyle      = lipgloss.NewStyle().Background(lipgloss.Color("#313244")).Foreground(colorWarning)
-	mdCodeBlockStyle = lipgloss.NewStyle().Background(lipgloss.Color("#1E1E2E")).Foreground(colorFg)
+	mdCodeStyle      = lipgloss.NewStyle().Background(colorSurface).Foreground(colorWarning)
+	mdCodeBlockStyle = lipgloss.NewStyle().Background(colorBg).Foreground(colorText)
 
 	// List and structure
-	mdBulletStyle     = lipgloss.NewStyle().Foreground(colorAccent)
-	mdOrderedStyle    = lipgloss.NewStyle().Foreground(colorAccent)
-	mdBlockquoteStyle = lipgloss.NewStyle().Foreground(colorPrimary)
-	mdHRuleStyle      = lipgloss.NewStyle().Foreground(colorMuted)
+	mdBulletStyle         = lipgloss.NewStyle().Foreground(colorSuccess)
+	mdOrderedStyle        = lipgloss.NewStyle().Foreground(colorSuccess)
+	mdBlockquoteStyle     = lipgloss.NewStyle().Foreground(colorPrimary)
+	mdBlockquoteTextStyle = lipgloss.NewStyle().Foreground(colorMuted)
+	mdHRuleStyle          = lipgloss.NewStyle().Foreground(colorMuted)
 
 	// Cursor
 	mdCursorStyle = lipgloss.NewStyle().Reverse(true)
 
 	// Checkbox styles
 	mdCheckboxOpenStyle        = lipgloss.NewStyle().Foreground(colorWarning)
-	mdCheckboxDoneStyle        = lipgloss.NewStyle().Foreground(colorAccent)
+	mdCheckboxDoneStyle        = lipgloss.NewStyle().Foreground(colorSuccess)
 	mdCheckboxOpenContentStyle = lipgloss.NewStyle().Foreground(colorWarning)
-	mdCheckboxDoneContentStyle = lipgloss.NewStyle().Foreground(colorAccent).Faint(true)
+	mdCheckboxDoneContentStyle = lipgloss.NewStyle().Foreground(colorSuccess).Faint(true)
 )

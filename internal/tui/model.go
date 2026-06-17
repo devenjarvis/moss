@@ -1054,7 +1054,7 @@ func (m *Model) updateLayout() {
 }
 
 func (m Model) listWidth() int {
-	return int(float64(m.width) * 0.22)
+	return int(float64(m.width) * listWidthRatio)
 }
 
 func (m Model) previewWidth() int {
@@ -1101,105 +1101,71 @@ func (m Model) View() tea.View {
 }
 
 func (m Model) renderListPane(width, height int) string {
-	style := paneStyle
-	if m.activePane == paneList {
-		style = activePaneStyle
-	}
-
-	// Todos mode rendering
 	if m.mode == modeTodos {
-		title := titleStyle.Render(fmt.Sprintf("Todos (%s)", m.todoFilter))
-
-		listH := m.listHeight()
-		var items []string
-		for i := m.todoOffset; i < len(m.filteredTodos) && i < m.todoOffset+listH; i++ {
-			t := m.filteredTodos[i]
-
-			// Checkbox
-			var checkbox string
-			if t.Done {
-				checkbox = todoDoneStyle.Render("[x]")
-			} else {
-				checkbox = todoOpenStyle.Render("[ ]")
-			}
-
-			// Todo text
-			todoText := t.Text
-			if todoText == "" {
-				todoText = "(empty)"
-			}
-
-			// Source note name (truncated)
-			source := t.NoteTitle
-			maxTextLen := width - 12 - len(source)
-			if maxTextLen < 8 {
-				maxTextLen = width - 10
-				source = ""
-			}
-			if maxTextLen < 0 {
-				maxTextLen = 0
-			}
-			if maxTextLen > 3 && len(todoText) > maxTextLen {
-				todoText = todoText[:maxTextLen-3] + "..."
-			} else if maxTextLen == 0 {
-				todoText = ""
-			}
-
-			var display string
-			if source != "" {
-				display = checkbox + " " + todoText + " " + todoSourceStyle.Render(source)
-			} else {
-				display = checkbox + " " + todoText
-			}
-
-			if i == m.todoCursor {
-				items = append(items, selectedItemStyle.Render("▸ "+display))
-			} else {
-				items = append(items, normalItemStyle.Render("  "+display))
-			}
-		}
-
-		content := strings.Join(items, "\n")
-		if len(m.filteredTodos) == 0 {
-			content = helpStyle.Render("\n  No todos found.")
-		}
-
-		// Pad to fill height
-		lines := strings.Count(content, "\n") + 1
-		for lines < height-3 {
-			content += "\n"
-			lines++
-		}
-
-		inner := lipgloss.JoinVertical(lipgloss.Left, title, content)
-		return style.Width(width - 2).Height(height - 2).Render(inner)
+		p := pane{title: fmt.Sprintf("Todos (%s)", m.todoFilter), width: width, height: height, active: m.activePane == paneList}
+		return p.render(m.renderTodoList(width, p.contentHeight()))
 	}
 
-	title := titleStyle.Render("Notes")
+	p := pane{title: "Notes", width: width, height: height, active: m.activePane == paneList}
+	return p.render(m.renderNoteList(width, p.contentHeight()))
+}
 
-	// Search bar or other input modes that show in list pane
-	var inputBar string
-	switch m.mode {
-	case modeSearch:
-		inputBar = m.searchInput.View()
-	case modeNewNote:
-		inputBar = lipgloss.NewStyle().Foreground(colorAccent).Render("Title: ") + m.newNoteInput.View()
-	case modeTagFilter:
-		label := "Tag: "
-		if len(m.allTags) > 0 {
-			label = fmt.Sprintf("Tag (%s): ", strings.Join(m.allTags, ", "))
-			// Truncate if too long for pane
-			maxLen := width - 6
-			if maxLen > 0 && len(label) > maxLen {
-				label = label[:maxLen-3] + "..."
-			}
-		}
-		inputBar = lipgloss.NewStyle().Foreground(colorSecondary).Render(label) + m.tagInput.View()
-	case modeConfirm:
-		inputBar = lipgloss.NewStyle().Foreground(colorWarning).Bold(true).Render(m.confirmMsg)
+// renderTodoList renders the todos list body (no pane chrome), padded to rows.
+func (m Model) renderTodoList(width, rows int) string {
+	if len(m.filteredTodos) == 0 {
+		return padToHeight(helpStyle.Render("\n  No todos found."), rows)
 	}
 
-	// Note list
+	listH := m.listHeight()
+	var items []string
+	for i := m.todoOffset; i < len(m.filteredTodos) && i < m.todoOffset+listH; i++ {
+		t := m.filteredTodos[i]
+
+		// Checkbox
+		var checkbox string
+		if t.Done {
+			checkbox = todoDoneStyle.Render("[x]")
+		} else {
+			checkbox = todoOpenStyle.Render("[ ]")
+		}
+
+		// Todo text
+		todoText := t.Text
+		if todoText == "" {
+			todoText = "(empty)"
+		}
+
+		// Source note name (truncated)
+		source := t.NoteTitle
+		maxTextLen := width - 12 - len(source)
+		if maxTextLen < 8 {
+			maxTextLen = width - 10
+			source = ""
+		}
+		if maxTextLen < 0 {
+			maxTextLen = 0
+		}
+		if maxTextLen > 3 && len(todoText) > maxTextLen {
+			todoText = todoText[:maxTextLen-3] + "..."
+		} else if maxTextLen == 0 {
+			todoText = ""
+		}
+
+		var display string
+		if source != "" {
+			display = checkbox + " " + todoText + " " + todoSourceStyle.Render(source)
+		} else {
+			display = checkbox + " " + todoText
+		}
+
+		items = append(items, renderListItem(display, i == m.todoCursor))
+	}
+
+	return padToHeight(strings.Join(items, "\n"), rows)
+}
+
+// renderNoteList renders the notes list body (with any input prompt), padded to rows.
+func (m Model) renderNoteList(width, rows int) string {
 	listH := m.listHeight()
 	var items []string
 	for i := m.listOffset; i < len(m.filteredNotes) && i < m.listOffset+listH; i++ {
@@ -1245,43 +1211,51 @@ func (m Model) renderListPane(width, height int) string {
 			display = highlightMatches(display, m.searchTerms)
 		}
 
-		if i == m.listCursor {
-			items = append(items, selectedItemStyle.Render("▸ "+display))
-		} else {
-			items = append(items, normalItemStyle.Render("  "+display))
-		}
+		items = append(items, renderListItem(display, i == m.listCursor))
 	}
 
 	content := strings.Join(items, "\n")
-	if inputBar != "" {
+	if inputBar := m.renderListInputBar(width); inputBar != "" {
 		content = inputBar + "\n" + content
 	}
 
-	// Pad to fill height
-	lines := strings.Count(content, "\n") + 1
-	for lines < height-3 {
-		content += "\n"
-		lines++
-	}
+	return padToHeight(content, rows)
+}
 
-	inner := lipgloss.JoinVertical(lipgloss.Left, title, content)
-	return style.Width(width - 2).Height(height - 2).Render(inner)
+// renderListInputBar renders the prompt shown above the note list for input
+// modes (search, new note, tag filter, confirm). Empty in normal mode.
+func (m Model) renderListInputBar(width int) string {
+	switch m.mode {
+	case modeSearch:
+		return m.searchInput.View()
+	case modeNewNote:
+		return newNoteLabelStyle.Render("Title: ") + m.newNoteInput.View()
+	case modeTagFilter:
+		label := "Tag: "
+		if len(m.allTags) > 0 {
+			label = fmt.Sprintf("Tag (%s): ", strings.Join(m.allTags, ", "))
+			// Truncate if too long for pane
+			maxLen := width - 6
+			if maxLen > 0 && len(label) > maxLen {
+				label = label[:maxLen-3] + "..."
+			}
+		}
+		return tagFilterLabelStyle.Render(label) + m.tagInput.View()
+	case modeConfirm:
+		return confirmPromptStyle.Render(m.confirmMsg)
+	}
+	return ""
 }
 
 func (m Model) renderPreviewPane(width, height int) string {
-	style := paneStyle
-	if m.activePane == panePreview {
-		style = activePaneStyle
-	}
+	active := m.activePane == panePreview
 
 	if m.mode == modeEdit {
-		title := titleStyle.Render("Editor")
-		content := m.editor.View(width-4, height-4)
-		inner := lipgloss.JoinVertical(lipgloss.Left, title, content)
-		return style.Width(width - 2).Height(height - 2).Render(inner)
+		p := pane{title: "Editor", width: width, height: height, active: active}
+		return p.render(m.editor.View(width-4, height-4))
 	}
 
-	title := titleStyle.Render("Preview")
+	p := pane{title: "Preview", width: width, height: height, active: active}
 
 	var content string
 	if m.mode == modeTodos && len(m.filteredTodos) == 0 {
@@ -1292,89 +1266,73 @@ func (m Model) renderPreviewPane(width, height int) string {
 		content = m.preview.View()
 	}
 
-	inner := lipgloss.JoinVertical(lipgloss.Left, title, content)
-	return style.Width(width - 2).Height(height - 2).Render(inner)
+	return p.render(content)
 }
 
 func (m Model) renderStatusBar() string {
-	var parts []string
-
 	if m.mode == modeEdit {
-		parts = append(parts, "Editing: "+m.editor.note.Title)
-		parts = append(parts, helpStyle.Render("Tab: fields  Esc: save & close  Ctrl+S: save"))
-
-		left := strings.Join(parts, " │ ")
-		gap := m.width - lipgloss.Width(left)
-		if gap < 0 {
-			gap = 0
-		}
-		return statusBarStyle.Render(left + strings.Repeat(" ", gap))
+		return statusBar{
+			width: m.width,
+			left: []string{
+				"Editing: " + m.editor.note.Title,
+				keyHint("Tab: fields  Esc: save & close  Ctrl+S: save"),
+			},
+		}.render()
 	}
 
 	if m.mode == modeTodos {
-		parts = append(parts, fmt.Sprintf("%d todos (%s)", len(m.filteredTodos), m.todoFilter))
+		left := []string{fmt.Sprintf("%d todos (%s)", len(m.filteredTodos), m.todoFilter)}
 		if len(m.filteredTodos) > 0 && m.todoCursor < len(m.filteredTodos) {
-			t := m.filteredTodos[m.todoCursor]
-			if t.NoteProject != "" {
-				parts = append(parts, lipgloss.NewStyle().Foreground(colorSecondary).Render("project:"+t.NoteProject))
+			if t := m.filteredTodos[m.todoCursor]; t.NoteProject != "" {
+				left = append(left, metaChip("project:"+t.NoteProject))
 			}
 		}
-		parts = append(parts, helpStyle.Render("f:filter  space:toggle  enter:go to note  Esc:back"))
-
-		left := strings.Join(parts, " │ ")
-		gap := m.width - lipgloss.Width(left)
-		if gap < 0 {
-			gap = 0
-		}
-		return statusBarStyle.Render(left + strings.Repeat(" ", gap))
+		left = append(left, keyHint("f:filter  space:toggle  enter:go to note  Esc:back"))
+		return statusBar{width: m.width, left: left}.render()
 	}
 
 	// Note count
-	parts = append(parts, fmt.Sprintf("%d notes", len(m.filteredNotes)))
+	left := []string{fmt.Sprintf("%d notes", len(m.filteredNotes))}
 
 	// Current note info
 	if len(m.filteredNotes) > 0 && m.listCursor < len(m.filteredNotes) {
 		n := m.filteredNotes[m.listCursor]
 		if n.Date != "" {
-			parts = append(parts, n.Date)
+			left = append(left, n.Date)
 		}
-		parts = append(parts, fmt.Sprintf("%d words", n.WordCount))
+		left = append(left, fmt.Sprintf("%d words", n.WordCount))
 	}
 
 	// Active tag filter
 	if m.activeTag != "" {
-		parts = append(parts, lipgloss.NewStyle().Foreground(colorSecondary).Render("tag:"+m.activeTag))
+		left = append(left, metaChip("tag:"+m.activeTag))
 	}
 
 	// Sort mode (show if not default)
 	if m.sortMode != sortDate {
-		parts = append(parts, lipgloss.NewStyle().Foreground(colorMuted).Render("sort:"+m.sortMode))
+		left = append(left, metaSortStyle.Render("sort:"+m.sortMode))
 	}
 
 	// Sync status
 	if m.syncing {
-		parts = append(parts, statusActiveStyle.Render("syncing..."))
+		left = append(left, statusActiveStyle.Render("syncing..."))
 	}
 
 	// Status message
 	if m.statusMsg != "" {
-		parts = append(parts, m.statusMsg)
+		left = append(left, m.statusMsg)
 	}
 
 	// Update notification
 	if m.updateVersion != "" {
-		parts = append(parts, lipgloss.NewStyle().Foreground(colorSecondary).Render("v"+m.updateVersion+" available"))
+		left = append(left, metaChip("v"+m.updateVersion+" available"))
 	}
 
-	left := strings.Join(parts, " │ ")
-	right := helpStyle.Render("? help │ q quit")
-
-	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right)
-	if gap < 0 {
-		gap = 0
-	}
-
-	return statusBarStyle.Render(left + strings.Repeat(" ", gap) + right)
+	return statusBar{
+		width: m.width,
+		left:  left,
+		right: []string{keyHint("? help │ q quit")},
+	}.render()
 }
 
 // extractSearchTerms extracts the value portions of a search query for highlighting.
@@ -1439,68 +1397,80 @@ func highlightMatches(text string, terms []string) string {
 	return result.String()
 }
 
+// helpEntry is one key/description row in the help modal.
+type helpEntry struct{ key, desc string }
+
+// helpSection is a titled group of help entries.
+type helpSection struct {
+	title   string
+	entries []helpEntry
+}
+
+var helpSections = []helpSection{
+	{"Navigation", []helpEntry{
+		{"j/k, ↑/↓", "Move up/down"},
+		{"h/l, ←/→", "Switch panes"},
+		{"Tab", "Next pane"},
+		{"Ctrl+d/u", "Scroll half page"},
+		{"Enter", "Edit note"},
+	}},
+	{"Actions", []helpEntry{
+		{"n", "New note"},
+		{"d", "Delete note"},
+		{"/", "Search notes"},
+		{"t", "Filter by tag"},
+		{"o", "Cycle sort order"},
+		{"s", "Sync & re-index"},
+		{"T", "Todos view"},
+	}},
+	{"Search Syntax", []helpEntry{
+		{"word", "Full-text search"},
+		{"title:word", "Search titles"},
+		{"tag:word", "Search by tag"},
+		{"project:word", "Search by project"},
+		{"people:word", "Search by people"},
+		{"status:word", "Search by status"},
+	}},
+	{"General", []helpEntry{
+		{"?", "Toggle help"},
+		{"Esc", "Cancel / back"},
+		{"q", "Quit"},
+	}},
+	{"Todos View (T)", []helpEntry{
+		{"space/x", "Toggle todo"},
+		{"enter", "Jump to note"},
+		{"f", "Cycle filter"},
+		{"Esc", "Back to notes"},
+	}},
+	{"Editor (Enter on note)", []helpEntry{
+		{"Tab", "Next field"},
+		{"Shift+Tab", "Previous field"},
+		{"Enter", "Jump to body"},
+		{"Ctrl+S", "Save"},
+		{"Esc", "Save & close"},
+	}},
+	{"List Indicators", []helpEntry{
+		{"+", "Contains TODOs"},
+	}},
+}
+
 func (m Model) helpView() string {
-	help := `
-  ┌─────────────────────────────────────┐
-  │           Moss - Help               │
-  ├─────────────────────────────────────┤
-  │                                     │
-  │  Navigation                         │
-  │    j/k, ↑/↓     Move up/down       │
-  │    h/l, ←/→     Switch panes       │
-  │    Tab           Next pane          │
-  │    Ctrl+d/u      Scroll half page   │
-  │    Enter         Edit note           │
-  │                                     │
-  │  Actions                            │
-  │    n             New note           │
-  │    d             Delete note        │
-  │    /             Search notes       │
-  │    t             Filter by tag      │
-  │    o             Cycle sort order   │
-  │    s             Sync & re-index    │
-  │    T             Todos view         │
-  │                                     │
-  │  Search Syntax                      │
-  │    word          Full-text search   │
-  │    title:word    Search titles      │
-  │    tag:word      Search by tag      │
-  │    project:word  Search by project  │
-  │    people:word   Search by people   │
-  │    status:word   Search by status   │
-  │                                     │
-  │  General                            │
-  │    ?             Toggle help        │
-  │    Esc           Cancel / back      │
-  │    q             Quit               │
-  │                                     │
-  │  Todos View (T)                     │
-  │    space/x       Toggle todo        │
-  │    enter         Jump to note       │
-  │    f             Cycle filter       │
-  │    Esc           Back to notes      │
-  │                                     │
-  │  Editor (Enter on note)             │
-  │    Tab           Next field         │
-  │    Shift+Tab     Previous field     │
-  │    Enter         Jump to body       │
-  │    Ctrl+S        Save               │
-  │    Esc           Save & close       │
-  │                                     │
-  │  List Indicators                    │
-  │    +  Contains TODOs                │
-  │                                     │
-  └─────────────────────────────────────┘
-`
-	return lipgloss.Place(
-		m.width, m.height,
-		lipgloss.Center, lipgloss.Center,
-		lipgloss.NewStyle().
-			Foreground(colorFg).
-			BorderStyle(lipgloss.RoundedBorder()).
-			BorderForeground(colorPrimary).
-			Render(help),
-	)
+	const keyWidth = 13
+
+	var b strings.Builder
+	b.WriteString(helpSectionStyle.Render("Moss — Help"))
+	b.WriteString("\n")
+	for _, sec := range helpSections {
+		b.WriteString("\n")
+		b.WriteString(helpSectionStyle.Render(sec.title))
+		b.WriteString("\n")
+		for _, e := range sec.entries {
+			key := helpKeyStyle.Render(fmt.Sprintf("%-*s", keyWidth, e.key))
+			b.WriteString("  " + key + helpDescStyle.Render(e.desc) + "\n")
+		}
+	}
+
+	return modal(m.width, m.height, b.String())
 }
 
 // SetWatcher attaches a file watcher to the model.
