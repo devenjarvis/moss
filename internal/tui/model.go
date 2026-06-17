@@ -1,10 +1,8 @@
 package tui
 
 import (
-	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -13,7 +11,6 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
-	"github.com/devenjarvis/moss/internal/ai"
 	"github.com/devenjarvis/moss/internal/autocorrect"
 	"github.com/devenjarvis/moss/internal/config"
 	"github.com/devenjarvis/moss/internal/db"
@@ -26,18 +23,15 @@ import (
 const (
 	paneList    = 0
 	panePreview = 1
-	paneChat    = 2
 )
 
 // Mode constants
 const (
 	modeNormal = iota
 	modeSearch
-	modeChat
 	modeHelp
 	modeConfirm
 	modeNewNote
-	modeGenerate
 	modeTagFilter
 	modeTodos
 	modeEdit
@@ -63,16 +57,6 @@ type notePreviewMsg struct {
 type syncCompleteMsg struct {
 	notes []*note.Note
 	err   error
-}
-
-type aiResponseMsg struct {
-	response string
-	err      error
-}
-
-type generateCompleteMsg struct {
-	path string
-	err  error
 }
 
 type errMsg struct {
@@ -111,10 +95,6 @@ type updateAvailableMsg struct {
 	version string
 }
 
-// frontmatterUpdatedMsg signals that a background frontmatter generation
-// completed and the note list should be refreshed.
-type frontmatterUpdatedMsg struct{}
-
 func clearStatusAfter(d time.Duration) tea.Cmd {
 	return tea.Tick(d, func(_ time.Time) tea.Msg {
 		return clearStatusMsg{}
@@ -125,7 +105,6 @@ func clearStatusAfter(d time.Duration) tea.Cmd {
 type Model struct {
 	cfg      config.Config
 	database *db.DB
-	worker   *ai.Worker
 	watcher  *msync.Watcher
 
 	// Layout
@@ -144,11 +123,6 @@ type Model struct {
 	preview        viewport.Model
 	previewContent string
 
-	// Chat
-	chatInput    textinput.Model
-	chatHistory  []chatMessage
-	chatViewport viewport.Model
-
 	// Search
 	searchInput textinput.Model
 	searchQuery string   // active search query text
@@ -156,9 +130,6 @@ type Model struct {
 
 	// New note title input
 	newNoteInput textinput.Model
-
-	// Generate prompt input
-	generateInput textinput.Model
 
 	// Tag filter input
 	tagInput  textinput.Model
@@ -174,7 +145,6 @@ type Model struct {
 
 	// Status
 	statusMsg string
-	aiPending int
 	syncing   bool
 
 	// Help overlay
@@ -191,14 +161,8 @@ type Model struct {
 	editor      Editor
 	editingPath string
 
-	// Responsive: track which panes are visible
-	chatVisible bool
-
 	// Update notification
 	updateVersion string
-
-	// Background frontmatter generation notification channel
-	frontmatterCh chan struct{}
 
 	// Input suppression: ignore key events until this time.
 	// Prevents misparsed terminal query responses (OSC, CSI) from being
@@ -206,17 +170,8 @@ type Model struct {
 	suppressInputUntil time.Time
 }
 
-type chatMessage struct {
-	role    string // "user" or "assistant"
-	content string
-}
-
 // New creates a new TUI model.
-func New(cfg config.Config, database *db.DB, worker *ai.Worker) Model {
-	ti := textinput.New()
-	ti.Placeholder = "Ask about your notes..."
-	ti.CharLimit = 500
-
+func New(cfg config.Config, database *db.DB) Model {
 	si := textinput.New()
 	si.Placeholder = "Search notes..."
 	si.CharLimit = 200
@@ -225,31 +180,21 @@ func New(cfg config.Config, database *db.DB, worker *ai.Worker) Model {
 	ni.Placeholder = "Note title (enter for untitled)..."
 	ni.CharLimit = 200
 
-	gi := textinput.New()
-	gi.Placeholder = "Describe the note to generate..."
-	gi.CharLimit = 500
-
 	tagi := textinput.New()
 	tagi.Placeholder = "Tag name..."
 	tagi.CharLimit = 100
 
 	preview := viewport.New()
-	chatVp := viewport.New()
 
 	return Model{
-		cfg:           cfg,
-		database:      database,
-		worker:        worker,
-		chatInput:     ti,
-		searchInput:   si,
-		newNoteInput:  ni,
-		generateInput: gi,
-		tagInput:      tagi,
-		preview:       preview,
-		chatViewport:  chatVp,
-		sortMode:      sortDate,
-		todoFilter:    "open",
-		chatVisible:   true,
+		cfg:          cfg,
+		database:     database,
+		searchInput:  si,
+		newNoteInput: ni,
+		tagInput:     tagi,
+		preview:      preview,
+		sortMode:     sortDate,
+		todoFilter:   "open",
 		// Suppress key input briefly at startup to absorb terminal query
 		// responses (OSC color, CSI cursor position) that Bubble Tea's input
 		// parser may dispatch as individual key events.
@@ -258,27 +203,11 @@ func New(cfg config.Config, database *db.DB, worker *ai.Worker) Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	cmds := []tea.Cmd{
+	return tea.Batch(
 		loadNotes(m.database),
 		textinput.Blink,
 		checkForUpdate(),
-	}
-	if m.frontmatterCh != nil {
-		cmds = append(cmds, waitForFrontmatter(m.frontmatterCh))
-	}
-	return tea.Batch(cmds...)
-}
-
-// waitForFrontmatter returns a tea.Cmd that blocks until a frontmatter
-// generation notification arrives on the channel.
-func waitForFrontmatter(ch chan struct{}) tea.Cmd {
-	return func() tea.Msg {
-		_, ok := <-ch
-		if !ok {
-			return nil
-		}
-		return frontmatterUpdatedMsg{}
-	}
+	)
 }
 
 func checkForUpdate() tea.Cmd {
@@ -334,9 +263,6 @@ func renderPreview(n *note.Note) tea.Cmd {
 		if n.Project != "" {
 			sb.WriteString(fmt.Sprintf("**Project:** %s\n", n.Project))
 		}
-		if n.Source == "generated" {
-			sb.WriteString("**Source:** AI generated\n")
-		}
 		if n.Summary != "" {
 			sb.WriteString(fmt.Sprintf("\n> %s\n", n.Summary))
 		}
@@ -344,19 +270,6 @@ func renderPreview(n *note.Note) tea.Cmd {
 		sb.WriteString(n.Body)
 
 		return notePreviewMsg{content: sb.String()}
-	}
-}
-
-func askAI(ctx context.Context, question string, notes []*note.Note) tea.Cmd {
-	return func() tea.Msg {
-		// Gather note contents for context
-		var sb strings.Builder
-		for _, n := range notes {
-			sb.WriteString(fmt.Sprintf("--- %s ---\n%s\n\n", n.Title, n.Body))
-		}
-
-		response, err := ai.Ask(ctx, question, sb.String())
-		return aiResponseMsg{response, err}
 	}
 }
 
@@ -369,58 +282,6 @@ func deleteNoteFile(filePath string, database *db.DB) tea.Cmd {
 			return deleteNoteMsg{err: err}
 		}
 		return deleteNoteMsg{}
-	}
-}
-
-func generateNote(cfg config.Config, database *db.DB, prompt string, notes []*note.Note) tea.Cmd {
-	return func() tea.Msg {
-		var sb strings.Builder
-		var sourcePaths []string
-		for _, n := range notes {
-			fullNote, err := note.ParseFile(n.FilePath)
-			if err != nil {
-				continue
-			}
-			sb.WriteString(fmt.Sprintf("--- %s ---\n%s\n\n", n.Title, fullNote.Body))
-			sourcePaths = append(sourcePaths, n.FilePath)
-		}
-
-		content, err := ai.GenerateNote(context.Background(), prompt, sb.String())
-		if err != nil {
-			return generateCompleteMsg{err: err}
-		}
-
-		// Parse generated content to extract title for filename
-		title := "generated"
-		if fm, _ := extractFrontmatter(content); fm != "" {
-			for _, line := range strings.Split(fm, "\n") {
-				if strings.HasPrefix(strings.TrimSpace(line), "title:") {
-					title = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "title:"))
-					title = strings.Trim(title, "\"'")
-					break
-				}
-			}
-		}
-
-		path, err := note.CreateNew(cfg.NotesDir, title)
-		if err != nil {
-			return generateCompleteMsg{err: err}
-		}
-
-		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
-			return generateCompleteMsg{err: err}
-		}
-
-		n, err := note.ParseFile(path)
-		if err == nil {
-			n.Source = "generated"
-			n.GeneratedPrompt = prompt
-			n.GeneratedFrom = sourcePaths
-			_ = n.WriteFrontmatter()
-			_ = database.UpsertNote(n)
-		}
-
-		return generateCompleteMsg{path: path}
 	}
 }
 
@@ -474,31 +335,11 @@ func toggleTodo(item note.TodoItem, database *db.DB) tea.Cmd {
 	}
 }
 
-func extractFrontmatter(content string) (string, string) {
-	if !strings.HasPrefix(strings.TrimSpace(content), "---") {
-		return "", content
-	}
-	trimmed := strings.TrimSpace(content)
-	start := strings.Index(trimmed, "---")
-	rest := trimmed[start+3:]
-	end := strings.Index(rest, "---")
-	if end == -1 {
-		return "", content
-	}
-	return strings.TrimSpace(rest[:end]), strings.TrimSpace(rest[end+3:])
-}
-
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		// Auto-hide chat on narrow terminals
-		m.chatVisible = m.width >= 100
-		// Clamp activePane if chat pane is no longer visible
-		if !m.chatVisible && m.activePane == paneChat {
-			m.activePane = panePreview
-		}
 		m.updateLayout()
 		return m, nil
 
@@ -557,36 +398,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.preview.SetContent(renderMarkdownPreview(msg.content, width))
 		m.preview.GotoTop()
 		return m, nil
-
-	case aiResponseMsg:
-		m.aiPending--
-		if msg.err != nil {
-			m.chatHistory = append(m.chatHistory, chatMessage{
-				role:    "assistant",
-				content: fmt.Sprintf("Error: %v", msg.err),
-			})
-		} else {
-			m.chatHistory = append(m.chatHistory, chatMessage{
-				role:    "assistant",
-				content: msg.response,
-			})
-		}
-		m.updateChatViewport()
-		return m, nil
-
-	case generateCompleteMsg:
-		m.aiPending--
-		if msg.err != nil {
-			m.statusMsg = fmt.Sprintf("Generate error: %v", msg.err)
-			return m, clearStatusAfter(5 * time.Second)
-		}
-		m.statusMsg = fmt.Sprintf("Generated: %s", filepath.Base(msg.path))
-		// Re-sync to pick up the new note
-		m.syncing = true
-		return m, tea.Batch(
-			syncNotes(m.cfg.NotesDir, m.database),
-			clearStatusAfter(5*time.Second),
-		)
 
 	case deleteNoteMsg:
 		if msg.err != nil {
@@ -663,48 +474,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.editingPath = msg.newPath
 			}
-			// Trigger AI enhancement if body changed since last review
-			enhanceCmd := m.maybeEnhance()
-			if enhanceCmd != nil {
-				return m, tea.Batch(cmd, enhanceCmd)
-			}
-			return m, cmd
-		}
-		return m, nil
-
-	case editorEnhanceTickMsg:
-		if m.mode == modeEdit {
-			m.editor, _, _ = m.editor.Update(msg)
-			// Check if the debounce fired and we should try enhancement
-			if m.editor.EnhanceReady() {
-				enhanceCmd := m.maybeEnhance()
-				if enhanceCmd != nil {
-					return m, enhanceCmd
-				}
-			}
-		}
-		return m, nil
-
-	case editorEnhanceChunkMsg:
-		if m.mode == modeEdit {
-			var cmd tea.Cmd
-			m.editor, cmd, _ = m.editor.Update(msg)
-			return m, cmd
-		}
-		return m, nil
-
-	case editorEnhanceCompleteMsg:
-		if m.mode == modeEdit {
-			var cmd tea.Cmd
-			m.editor, cmd, _ = m.editor.Update(msg)
-			return m, cmd
-		}
-		return m, nil
-
-	case editorSpinnerTickMsg:
-		if m.mode == modeEdit {
-			var cmd tea.Cmd
-			m.editor, cmd, _ = m.editor.Update(msg)
 			return m, cmd
 		}
 		return m, nil
@@ -729,16 +498,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case updateAvailableMsg:
 		m.updateVersion = msg.version
 		return m, nil
-
-	case frontmatterUpdatedMsg:
-		// Background frontmatter generation completed — reload notes and
-		// continue listening for more updates.
-		var cmds []tea.Cmd
-		if m.frontmatterCh != nil {
-			cmds = append(cmds, waitForFrontmatter(m.frontmatterCh))
-		}
-		cmds = append(cmds, syncNotes(m.cfg.NotesDir, m.database))
-		return m, tea.Batch(cmds...)
 
 	case clearStatusMsg:
 		m.statusMsg = ""
@@ -788,14 +547,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case m.mode == modeSearch:
 		m.searchInput, cmd = m.searchInput.Update(msg)
 		return m, cmd
-	case m.mode == modeChat || m.activePane == paneChat:
-		m.chatInput, cmd = m.chatInput.Update(msg)
-		return m, cmd
 	case m.mode == modeNewNote:
 		m.newNoteInput, cmd = m.newNoteInput.Update(msg)
-		return m, cmd
-	case m.mode == modeGenerate:
-		m.generateInput, cmd = m.generateInput.Update(msg)
 		return m, cmd
 	case m.mode == modeTagFilter:
 		m.tagInput, cmd = m.tagInput.Update(msg)
@@ -879,19 +632,9 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		if m.mode == modeChat {
-			m.mode = modeNormal
-			m.chatInput.Blur()
-			return m, nil
-		}
 		if m.mode == modeNewNote {
 			m.mode = modeNormal
 			m.newNoteInput.Blur()
-			return m, nil
-		}
-		if m.mode == modeGenerate {
-			m.mode = modeNormal
-			m.generateInput.Blur()
 			return m, nil
 		}
 		if m.mode == modeTagFilter {
@@ -970,29 +713,6 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// Chat mode input
-	if m.mode == modeChat {
-		switch key {
-		case "enter":
-			question := m.chatInput.Value()
-			if question == "" {
-				return m, nil
-			}
-			m.chatInput.SetValue("")
-			m.chatHistory = append(m.chatHistory, chatMessage{
-				role:    "user",
-				content: question,
-			})
-			m.aiPending++
-			m.updateChatViewport()
-			return m, askAI(context.Background(), question, m.filteredNotes)
-		default:
-			var cmd tea.Cmd
-			m.chatInput, cmd = m.chatInput.Update(msg)
-			return m, cmd
-		}
-	}
-
 	// New note title input
 	if m.mode == modeNewNote {
 		switch key {
@@ -1008,27 +728,6 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		default:
 			var cmd tea.Cmd
 			m.newNoteInput, cmd = m.newNoteInput.Update(msg)
-			return m, cmd
-		}
-	}
-
-	// Generate prompt input
-	if m.mode == modeGenerate {
-		switch key {
-		case "enter":
-			prompt := m.generateInput.Value()
-			m.mode = modeNormal
-			m.generateInput.Blur()
-			m.generateInput.SetValue("")
-			if prompt == "" {
-				return m, nil
-			}
-			m.aiPending++
-			m.statusMsg = "Generating note..."
-			return m, generateNote(m.cfg, m.database, prompt, m.notes)
-		default:
-			var cmd tea.Cmd
-			m.generateInput, cmd = m.generateInput.Update(msg)
 			return m, cmd
 		}
 	}
@@ -1126,11 +825,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case "tab":
-		if m.chatVisible {
-			m.activePane = (m.activePane + 1) % 3
-		} else {
-			m.activePane = (m.activePane + 1) % 2
-		}
+		m.activePane = (m.activePane + 1) % 2
 		return m, nil
 
 	case "h", "left":
@@ -1140,11 +835,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "l", "right":
-		maxPane := 2
-		if !m.chatVisible {
-			maxPane = 1
-		}
-		if m.activePane < maxPane {
+		if m.activePane < panePreview {
 			m.activePane++
 		}
 		return m, nil
@@ -1159,8 +850,6 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 		case panePreview:
 			m.preview.ScrollDown(3)
-		case paneChat:
-			m.chatViewport.ScrollDown(3)
 		}
 		return m, nil
 
@@ -1174,8 +863,6 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 		case panePreview:
 			m.preview.ScrollUp(3)
-		case paneChat:
-			m.chatViewport.ScrollUp(3)
 		}
 		return m, nil
 
@@ -1220,17 +907,6 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.searchTerms = nil
 		return m, textinput.Blink
 
-	case "c":
-		m.mode = modeChat
-		m.activePane = paneChat
-		// Show chat pane if hidden
-		if !m.chatVisible {
-			m.chatVisible = true
-			m.updateLayout()
-		}
-		m.chatInput.Focus()
-		return m, textinput.Blink
-
 	case "n":
 		m.mode = modeNewNote
 		m.newNoteInput.SetValue("")
@@ -1247,12 +923,6 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
-
-	case "g":
-		m.mode = modeGenerate
-		m.generateInput.SetValue("")
-		m.generateInput.Focus()
-		return m, textinput.Blink
 
 	case "t":
 		m.mode = modeTagFilter
@@ -1317,46 +987,6 @@ func (m *Model) filterByTag(tag string) tea.Cmd {
 	}
 }
 
-// maybeEnhance triggers a streaming AI enhancement if the body has changed since the last review.
-func (m *Model) maybeEnhance() tea.Cmd {
-	if m.worker == nil {
-		return nil
-	}
-
-	currentBody := m.editor.BodyValue()
-	lastReviewed := m.editor.LastReviewedBody()
-
-	// Skip if no changes or already pending
-	if currentBody == lastReviewed || m.editor.EnhancePending() {
-		return nil
-	}
-
-	// Skip very short notes (less than a few words)
-	if len(strings.Fields(currentBody)) < 3 {
-		return nil
-	}
-
-	// Compute a simple diff description
-	diff := "New content since last review."
-	if lastReviewed != "" {
-		diff = fmt.Sprintf("Previous version had %d chars, now has %d chars.",
-			len(lastReviewed), len(currentBody))
-	}
-
-	m.editor.SetEnhancePending(true)
-	m.editor.SetBodyAtRequest(currentBody)
-	m.editor.ClearThoughts()
-
-	// Start streaming enhance — thoughts arrive as chunks, body at completion
-	streamCh := ai.EnhanceStream(context.Background(), currentBody, diff)
-
-	// Start spinner + first stream read
-	spinnerCmd := m.editor.StartSpinner()
-	streamCmd := waitForStreamChunk(streamCh)
-
-	return tea.Batch(spinnerCmd, streamCmd)
-}
-
 func (m *Model) ensureListVisible() {
 	listHeight := m.listHeight()
 	if m.listCursor < m.listOffset {
@@ -1405,16 +1035,10 @@ func (m Model) previewForTodo(todo note.TodoItem) tea.Cmd {
 
 func (m *Model) updateLayout() {
 	previewWidth := m.previewWidth()
-	chatWidth := m.chatWidth()
 	contentHeight := m.height - 3 // status bar (1) + pane borders (2)
 
 	m.preview.SetWidth(previewWidth - 4)
 	m.preview.SetHeight(contentHeight - 1) // subtract title line
-
-	if m.chatVisible {
-		m.chatViewport.SetWidth(chatWidth - 4)
-		m.chatViewport.SetHeight(contentHeight - 4) // title (1) + input border area (3)
-	}
 
 	if m.previewContent != "" {
 		width := m.preview.Width()
@@ -1434,47 +1058,7 @@ func (m Model) listWidth() int {
 }
 
 func (m Model) previewWidth() int {
-	if !m.chatVisible {
-		return m.width - m.listWidth()
-	}
-	return int(float64(m.width) * 0.46)
-}
-
-func (m Model) chatWidth() int {
-	if !m.chatVisible {
-		return 0
-	}
-	return m.width - m.listWidth() - m.previewWidth()
-}
-
-func (m *Model) updateChatViewport() {
-	width := m.chatViewport.Width()
-	if width <= 0 {
-		width = 40
-	}
-
-	var sb strings.Builder
-	for _, msg := range m.chatHistory {
-		if msg.role == "user" {
-			sb.WriteString(lipgloss.NewStyle().
-				Foreground(colorSecondary).Bold(true).
-				Render("You: "))
-			sb.WriteString(wrapText(msg.content, width, 6))
-		} else {
-			sb.WriteString(lipgloss.NewStyle().
-				Foreground(colorAccent).Bold(true).
-				Render("Moss: "))
-			sb.WriteString(wrapText(msg.content, width, 6))
-		}
-		sb.WriteString("\n\n")
-	}
-	if m.aiPending > 0 {
-		sb.WriteString(lipgloss.NewStyle().
-			Foreground(colorWarning).Italic(true).
-			Render("Thinking..."))
-	}
-	m.chatViewport.SetContent(sb.String())
-	m.chatViewport.GotoBottom()
+	return m.width - m.listWidth()
 }
 
 func (m Model) View() tea.View {
@@ -1495,7 +1079,7 @@ func (m Model) View() tea.View {
 
 	var body string
 	if m.mode == modeEdit {
-		// Full-screen editor: hide list and chat panes
+		// Full-screen editor: hide the list pane
 		editorPane := m.renderPreviewPane(m.width, contentHeight)
 		body = editorPane
 	} else {
@@ -1506,13 +1090,7 @@ func (m Model) View() tea.View {
 		listPane := m.renderListPane(listW, contentHeight)
 		previewPane := m.renderPreviewPane(previewW, contentHeight)
 
-		if m.chatVisible {
-			chatW := m.chatWidth()
-			chatPane := m.renderChatPane(chatW, contentHeight)
-			body = lipgloss.JoinHorizontal(lipgloss.Top, listPane, previewPane, chatPane)
-		} else {
-			body = lipgloss.JoinHorizontal(lipgloss.Top, listPane, previewPane)
-		}
+		body = lipgloss.JoinHorizontal(lipgloss.Top, listPane, previewPane)
 	}
 
 	// Status bar
@@ -1606,8 +1184,6 @@ func (m Model) renderListPane(width, height int) string {
 		inputBar = m.searchInput.View()
 	case modeNewNote:
 		inputBar = lipgloss.NewStyle().Foreground(colorAccent).Render("Title: ") + m.newNoteInput.View()
-	case modeGenerate:
-		inputBar = lipgloss.NewStyle().Foreground(colorWarning).Render("Gen: ") + m.generateInput.View()
 	case modeTagFilter:
 		label := "Tag: "
 		if len(m.allTags) > 0 {
@@ -1643,9 +1219,6 @@ func (m Model) renderListPane(width, height int) string {
 		titleText := n.Title
 		// Add indicators
 		indicators := ""
-		if n.Source == "generated" {
-			indicators += "*"
-		}
 		if n.HasTodos {
 			indicators += "+"
 		}
@@ -1723,30 +1296,6 @@ func (m Model) renderPreviewPane(width, height int) string {
 	return style.Width(width - 2).Height(height - 2).Render(inner)
 }
 
-func (m Model) renderChatPane(width, height int) string {
-	style := paneStyle
-	if m.activePane == paneChat {
-		style = activePaneStyle
-	}
-
-	title := titleStyle.Render("Chat")
-
-	var content string
-	if len(m.chatHistory) == 0 && m.aiPending == 0 {
-		content = helpStyle.Render("\n  Press 'c' to ask\n  about your notes.")
-	} else {
-		content = m.chatViewport.View()
-	}
-
-	var input string
-	if m.mode == modeChat {
-		input = chatInputStyle.Width(width - 6).Render(m.chatInput.View())
-	}
-
-	inner := lipgloss.JoinVertical(lipgloss.Left, title, content, input)
-	return style.Width(width - 2).Height(height - 2).Render(inner)
-}
-
 func (m Model) renderStatusBar() string {
 	var parts []string
 
@@ -1802,12 +1351,9 @@ func (m Model) renderStatusBar() string {
 		parts = append(parts, lipgloss.NewStyle().Foreground(colorMuted).Render("sort:"+m.sortMode))
 	}
 
-	// Sync/AI status
+	// Sync status
 	if m.syncing {
 		parts = append(parts, statusActiveStyle.Render("syncing..."))
-	}
-	if m.aiPending > 0 {
-		parts = append(parts, statusActiveStyle.Render(fmt.Sprintf("AI: %d pending", m.aiPending)))
 	}
 
 	// Status message
@@ -1909,11 +1455,9 @@ func (m Model) helpView() string {
   │  Actions                            │
   │    n             New note           │
   │    d             Delete note        │
-  │    g             Generate AI note   │
   │    /             Search notes       │
   │    t             Filter by tag      │
   │    o             Cycle sort order   │
-  │    c             Chat with AI       │
   │    s             Sync & re-index    │
   │    T             Todos view         │
   │                                     │
@@ -1941,12 +1485,9 @@ func (m Model) helpView() string {
   │    Shift+Tab     Previous field     │
   │    Enter         Jump to body       │
   │    Ctrl+S        Save               │
-  │    Ctrl+Z        Undo AI fixes      │
-  │    Ctrl+Y        Redo AI fixes      │
   │    Esc           Save & close       │
   │                                     │
   │  List Indicators                    │
-  │    *  AI generated note             │
   │    +  Contains TODOs                │
   │                                     │
   └─────────────────────────────────────┘
@@ -1965,10 +1506,4 @@ func (m Model) helpView() string {
 // SetWatcher attaches a file watcher to the model.
 func (m *Model) SetWatcher(w *msync.Watcher) {
 	m.watcher = w
-}
-
-// SetFrontmatterCh sets the channel used to receive notifications when
-// background frontmatter generation completes for a note.
-func (m *Model) SetFrontmatterCh(ch chan struct{}) {
-	m.frontmatterCh = ch
 }

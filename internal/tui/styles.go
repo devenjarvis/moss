@@ -49,12 +49,6 @@ var (
 	helpStyle = lipgloss.NewStyle().
 			Foreground(colorMuted)
 
-	// Chat
-	chatInputStyle = lipgloss.NewStyle().
-			BorderStyle(lipgloss.RoundedBorder()).
-			BorderForeground(colorSecondary).
-			Padding(0, 1)
-
 	// Todos
 	todoDoneStyle = lipgloss.NewStyle().
 			Foreground(colorAccent) // green for [x]
@@ -108,18 +102,6 @@ var (
 	mdOrderedStyle    = lipgloss.NewStyle().Foreground(colorAccent)
 	mdBlockquoteStyle = lipgloss.NewStyle().Foreground(colorPrimary)
 	mdHRuleStyle      = lipgloss.NewStyle().Foreground(colorMuted)
-
-	// AI thoughts
-	aiThoughtsStyle = lipgloss.NewStyle().
-			Foreground(colorMuted).
-			Italic(true).
-			PaddingLeft(1)
-
-	aiThoughtsBoxStyle = lipgloss.NewStyle().
-				BorderStyle(lipgloss.RoundedBorder()).
-				BorderForeground(lipgloss.Color("#9333EA")). // vivid purple
-				PaddingLeft(1).
-				PaddingRight(1)
 
 	// Cursor
 	mdCursorStyle = lipgloss.NewStyle().Reverse(true)

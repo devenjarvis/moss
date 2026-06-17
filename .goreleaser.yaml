@@ -60,7 +60,7 @@ brews:
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     directory: Formula
     homepage: "https://github.com/devenjarvis/moss"
-    description: "AI-powered note-taking TUI"
+    description: "A fast, friendly note-taking TUI"
     license: "MIT"
     install: |
       bin.install "moss"
