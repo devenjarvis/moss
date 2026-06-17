@@ -12,7 +12,6 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
-	"github.com/devenjarvis/moss/internal/ai"
 	"github.com/devenjarvis/moss/internal/autocorrect"
 	"github.com/devenjarvis/moss/internal/db"
 	"github.com/devenjarvis/moss/internal/note"
@@ -40,28 +39,6 @@ type noteCreatedMsg struct {
 	path string
 }
 
-// Editor messages for AI enhancement
-
-// editorEnhanceChunkMsg delivers a streaming chunk of AI thoughts text.
-type editorEnhanceChunkMsg struct {
-	delta string                // new text to append to thoughts
-	ch    <-chan ai.StreamEvent // channel for next chunk
-}
-
-// editorEnhanceCompleteMsg signals streaming is done with the corrected body.
-type editorEnhanceCompleteMsg struct {
-	correctedBody string
-	err           error
-}
-
-// editorEnhanceTickMsg fires after a short typing pause to trigger AI enhancement.
-type editorEnhanceTickMsg struct {
-	id int // tick ID to match against current
-}
-
-// editorSpinnerTickMsg drives the spinner animation while AI is thinking.
-type editorSpinnerTickMsg struct{}
-
 // Editor is the in-app note editor component.
 type Editor struct {
 	note     *note.Note
@@ -82,30 +59,6 @@ type Editor struct {
 
 	corrector      *autocorrect.Corrector
 	lastCorrection *lastCorrectionState // tracks last autocorrect for undo-on-backspace
-
-	// AI enhancement state
-	lastReviewedBody string // body at last AI review (to detect changes)
-	preCorrectBody   string // body before last auto-correction (for undo)
-	aiThoughts       string // current AI thoughts/questions
-	enhancePending   bool   // waiting for AI enhance response
-	canUndoEnhance   bool   // true after auto-correction applied
-	bodyAtRequest    string // body snapshot when enhance request was sent
-
-	// Enhance debounce (separate from auto-save)
-	enhanceTickID int // tick ID for enhance debounce
-
-	// Spinner animation
-	spinnerFrame int // current frame index
-
-	// Streaming state
-	streamingThoughts bool // true while thoughts are streaming in
-
-	// Redo state
-	redoCorrectedBody string // stashed corrected body for redo after undo
-	canRedoEnhance    bool   // true after undo, cleared on next edit
-
-	// Enhance debounce readiness flag (checked by model.go)
-	enhanceReady bool
 }
 
 // lastCorrectionState stores enough info to undo the most recent autocorrect.
@@ -184,51 +137,6 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd, bool) {
 				return e, nil, false
 			}
 			e.cycleFocus(-1)
-			return e, nil, false
-
-		case "ctrl+y":
-			// Redo AI enhancement corrections
-			if e.canRedoEnhance && e.redoCorrectedBody != "" {
-				row := e.body.Line()
-				col := e.body.Column()
-				e.preCorrectBody = e.body.Value()
-				e.body.SetValue(e.redoCorrectedBody)
-				repositionCursor(&e.body, row, col)
-				e.canUndoEnhance = true
-				e.canRedoEnhance = false
-				e.dirty = true
-				e.saved = false
-				e.lastEdit = time.Now()
-				e.tickID++
-				tickID := e.tickID
-				tickCmd := tea.Tick(5*time.Second, func(_ time.Time) tea.Msg {
-					return editorAutoSaveTickMsg{id: tickID}
-				})
-				return e, tickCmd, false
-			}
-			return e, nil, false
-
-		case "ctrl+z":
-			// Undo AI enhancement corrections
-			if e.canUndoEnhance && e.preCorrectBody != "" {
-				row := e.body.Line()
-				col := e.body.Column()
-				// Stash for redo
-				e.redoCorrectedBody = e.body.Value()
-				e.body.SetValue(e.preCorrectBody)
-				repositionCursor(&e.body, row, col)
-				e.canUndoEnhance = false
-				e.canRedoEnhance = true
-				e.dirty = true
-				e.saved = false
-				e.lastEdit = time.Now()
-				e.tickID++
-				tickID := e.tickID
-				tickCmd := tea.Tick(5*time.Second, func(_ time.Time) tea.Msg {
-					return editorAutoSaveTickMsg{id: tickID}
-				})
-				return e, tickCmd, false
-			}
 			return e, nil, false
 
 		case "ctrl+m":
@@ -324,10 +232,7 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd, bool) {
 			e.lastCorrection = nil
 		}
 
-		// Clear redo state on new edits
-		e.canRedoEnhance = false
-
-		// Mark dirty and schedule auto-save + enhance debounce
+		// Mark dirty and schedule auto-save
 		e.dirty = true
 		e.saved = false
 		e.lastEdit = time.Now()
@@ -337,14 +242,7 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd, bool) {
 			return editorAutoSaveTickMsg{id: tickID}
 		})
 
-		// Schedule enhance debounce (800ms after last keystroke)
-		e.enhanceTickID++
-		enhanceID := e.enhanceTickID
-		enhanceCmd := tea.Tick(800*time.Millisecond, func(_ time.Time) tea.Msg {
-			return editorEnhanceTickMsg{id: enhanceID}
-		})
-
-		return e, tea.Batch(cmd, tickCmd, enhanceCmd), false
+		return e, tea.Batch(cmd, tickCmd), false
 
 	case editorAutoSaveTickMsg:
 		// Only save if this tick matches the latest and we're dirty
@@ -362,63 +260,6 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd, bool) {
 			if msg.newPath != "" {
 				e.note.FilePath = msg.newPath
 			}
-		}
-		return e, nil, false
-
-	case editorEnhanceChunkMsg:
-		// Streaming chunk of AI thoughts — append to display
-		e.aiThoughts += msg.delta
-		e.streamingThoughts = true
-		// Schedule read of the next chunk from the stream
-		return e, waitForStreamChunk(msg.ch), false
-
-	case editorEnhanceCompleteMsg:
-		e.enhancePending = false
-		e.streamingThoughts = false
-		if msg.err != nil {
-			// Silently ignore AI errors — don't disrupt editing
-			return e, nil, false
-		}
-
-		// Only apply corrections if body hasn't changed since we sent the request
-		currentBody := e.body.Value()
-		if currentBody == e.bodyAtRequest && msg.correctedBody != "" && msg.correctedBody != currentBody {
-			row := e.body.Line()
-			col := e.body.Column()
-			e.preCorrectBody = currentBody
-			e.body.SetValue(msg.correctedBody)
-			repositionCursor(&e.body, row, col)
-			e.canUndoEnhance = true
-			e.lastReviewedBody = msg.correctedBody
-			// Mark dirty so corrections get saved
-			e.dirty = true
-			e.saved = false
-			e.lastEdit = time.Now()
-			e.tickID++
-			tickID := e.tickID
-			return e, tea.Tick(5*time.Second, func(_ time.Time) tea.Msg {
-				return editorAutoSaveTickMsg{id: tickID}
-			}), false
-		}
-		// Body changed during AI processing — update reviewed marker to current
-		e.lastReviewedBody = currentBody
-		return e, nil, false
-
-	case editorEnhanceTickMsg:
-		// Only trigger if this is the latest enhance tick (debounce)
-		if msg.id == e.enhanceTickID {
-			// Signal to model.go that it should try maybeEnhance
-			// We set a flag that model.go checks
-			e.enhanceReady = true
-		}
-		return e, nil, false
-
-	case editorSpinnerTickMsg:
-		if e.enhancePending {
-			e.spinnerFrame = (e.spinnerFrame + 1) % len(spinnerFrames)
-			return e, tea.Tick(100*time.Millisecond, func(_ time.Time) tea.Msg {
-				return editorSpinnerTickMsg{}
-			}), false
 		}
 		return e, nil, false
 	}
@@ -455,31 +296,11 @@ func (e *Editor) View(width, height int) string {
 	if e.saving {
 		status = editorDirtyStyle.Render("saving...")
 	} else if e.dirty {
-		statusText := "● modified"
-		if e.enhancePending {
-			statusText = e.SpinnerText() + " AI reviewing...  " + statusText
-		}
-		status = editorDirtyStyle.Render(statusText)
+		status = editorDirtyStyle.Render("● modified")
 	} else if e.saved {
-		savedText := "✓ saved"
-		if e.enhancePending {
-			savedText = e.SpinnerText() + " AI reviewing...  " + savedText
-		}
-		status = editorSavedStyle.Render(savedText)
+		status = editorSavedStyle.Render("✓ saved")
 	} else {
-		helpText := "Tab: indent  Shift+Tab: outdent  Ctrl+M: frontmatter  Esc: save & close  Ctrl+S: save  ⌘B/I: bold/italic  ⌘1-3: heading"
-		if e.enhancePending {
-			helpText = e.SpinnerText() + " AI reviewing...  " + helpText
-		}
-		status = helpStyle.Render(helpText)
-	}
-
-	// Thoughts section (if available)
-	var thoughtsStr string
-	thoughtsHeight := 0
-	if e.aiThoughts != "" {
-		thoughtsStr = e.renderThoughts(width - 4)
-		thoughtsHeight = lipgloss.Height(thoughtsStr)
+		status = helpStyle.Render("Tab: indent  Shift+Tab: outdent  Ctrl+M: frontmatter  Esc: save & close  Ctrl+S: save  ⌘B/I: bold/italic  ⌘1-3: heading")
 	}
 
 	// Body takes remaining space
@@ -487,7 +308,7 @@ func (e *Editor) View(width, height int) string {
 	headerHeight := lipgloss.Height(header)
 	statusHeight := 1
 
-	bodyHeight := height - headerHeight - statusHeight - thoughtsHeight - 1
+	bodyHeight := height - headerHeight - statusHeight - 1
 	if bodyHeight < 3 {
 		bodyHeight = 3
 	}
@@ -512,9 +333,6 @@ func (e *Editor) View(width, height int) string {
 		e.topLine,
 	)
 
-	if thoughtsStr != "" {
-		return lipgloss.JoinVertical(lipgloss.Left, header, bodyStr, thoughtsStr, status)
-	}
 	return lipgloss.JoinVertical(lipgloss.Left, header, bodyStr, status)
 }
 
@@ -1083,115 +901,4 @@ func (e *Editor) undoLastCorrection() bool {
 
 	e.lastCorrection = nil
 	return true
-}
-
-// renderThoughts renders the AI thoughts/questions section in a bordered box.
-func (e *Editor) renderThoughts(width int) string {
-	if e.aiThoughts == "" {
-		return ""
-	}
-
-	thoughtsText := e.aiThoughts
-	if e.streamingThoughts {
-		thoughtsText += "▌" // cursor while streaming
-	}
-
-	var sections []string
-
-	// Undo/redo hints
-	if e.canUndoEnhance {
-		sections = append(sections, helpStyle.Render("Ctrl+Z to undo"))
-	} else if e.canRedoEnhance {
-		sections = append(sections, helpStyle.Render("Ctrl+Y to redo AI corrections"))
-	}
-
-	sections = append(sections, aiThoughtsStyle.Render(thoughtsText))
-
-	innerContent := lipgloss.JoinVertical(lipgloss.Left, sections...)
-
-	// Render in a bordered box
-	boxWidth := width
-	if boxWidth < 10 {
-		boxWidth = 10
-	}
-	box := aiThoughtsBoxStyle.Width(boxWidth - 2).Render(innerContent)
-
-	return box
-}
-
-// BodyValue returns the current body text for external access.
-func (e *Editor) BodyValue() string {
-	return e.body.Value()
-}
-
-// LastReviewedBody returns the body text at the last AI review.
-func (e *Editor) LastReviewedBody() string {
-	return e.lastReviewedBody
-}
-
-// EnhancePending returns whether an AI enhance request is in flight.
-func (e *Editor) EnhancePending() bool {
-	return e.enhancePending
-}
-
-// SetEnhancePending marks that an enhance request has been submitted.
-func (e *Editor) SetEnhancePending(pending bool) {
-	e.enhancePending = pending
-}
-
-// SetBodyAtRequest stores the body snapshot when an enhance request was sent.
-func (e *Editor) SetBodyAtRequest(body string) {
-	e.bodyAtRequest = body
-}
-
-// ClearThoughts resets the AI thoughts display for a new streaming session.
-func (e *Editor) ClearThoughts() {
-	e.aiThoughts = ""
-	e.streamingThoughts = false
-}
-
-// EnhanceReady returns and clears the enhance-ready flag set by debounce tick.
-func (e *Editor) EnhanceReady() bool {
-	if e.enhanceReady {
-		e.enhanceReady = false
-		return true
-	}
-	return false
-}
-
-// spinnerFrames are the animation frames for the AI thinking spinner.
-var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
-
-// SpinnerText returns the current spinner frame text, or empty if not pending.
-func (e *Editor) SpinnerText() string {
-	if !e.enhancePending {
-		return ""
-	}
-	return spinnerFrames[e.spinnerFrame%len(spinnerFrames)]
-}
-
-// StartSpinner kicks off the spinner animation and returns the first tick command.
-func (e *Editor) StartSpinner() tea.Cmd {
-	e.spinnerFrame = 0
-	return tea.Tick(100*time.Millisecond, func(_ time.Time) tea.Msg {
-		return editorSpinnerTickMsg{}
-	})
-}
-
-// waitForStreamChunk returns a tea.Cmd that reads the next event from a stream channel.
-func waitForStreamChunk(ch <-chan ai.StreamEvent) tea.Cmd {
-	return func() tea.Msg {
-		event, ok := <-ch
-		if !ok {
-			// Channel closed unexpectedly
-			return editorEnhanceCompleteMsg{}
-		}
-		if event.Err != nil {
-			return editorEnhanceCompleteMsg{err: event.Err}
-		}
-		if event.Done {
-			return editorEnhanceCompleteMsg{correctedBody: event.CorrectedBody}
-		}
-		return editorEnhanceChunkMsg{delta: event.ThoughtsDelta, ch: ch}
-	}
 }

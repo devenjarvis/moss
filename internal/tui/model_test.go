@@ -10,7 +10,6 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/devenjarvis/moss/internal/ai"
 	"github.com/devenjarvis/moss/internal/config"
 	"github.com/devenjarvis/moss/internal/db"
 	"github.com/devenjarvis/moss/internal/note"
@@ -29,9 +28,8 @@ func newTestModel(t *testing.T) Model {
 		NotesDir: t.TempDir(),
 		DBPath:   dbPath,
 	}
-	worker := ai.NewWorker(10)
 
-	m := New(cfg, database, worker)
+	m := New(cfg, database)
 	// Set a reasonable window size
 	m.width = 120
 	m.height = 40
@@ -80,14 +78,8 @@ func TestPaneNavigation_Tab(t *testing.T) {
 
 	model, _ = m.Update(keyMsg("tab"))
 	m = model.(Model)
-	if m.activePane != paneChat {
-		t.Errorf("after 2nd tab: activePane = %d, want %d (paneChat)", m.activePane, paneChat)
-	}
-
-	model, _ = m.Update(keyMsg("tab"))
-	m = model.(Model)
 	if m.activePane != paneList {
-		t.Errorf("after 3rd tab: activePane = %d, want %d (paneList, wraps around)", m.activePane, paneList)
+		t.Errorf("after 2nd tab: activePane = %d, want %d (paneList, wraps around)", m.activePane, paneList)
 	}
 }
 
@@ -101,37 +93,25 @@ func TestPaneNavigation_LeftRight(t *testing.T) {
 		t.Errorf("after 'l': activePane = %d, want %d", m.activePane, panePreview)
 	}
 
-	model, _ = m.Update(keyMsg("l"))
-	m = model.(Model)
-	if m.activePane != paneChat {
-		t.Errorf("after 2nd 'l': activePane = %d, want %d", m.activePane, paneChat)
-	}
-
 	// Right at rightmost does nothing
 	model, _ = m.Update(keyMsg("l"))
 	m = model.(Model)
-	if m.activePane != paneChat {
-		t.Errorf("after 3rd 'l': activePane = %d, should stay at %d", m.activePane, paneChat)
+	if m.activePane != panePreview {
+		t.Errorf("after 2nd 'l': activePane = %d, should stay at %d", m.activePane, panePreview)
 	}
 
 	// Left moves back
 	model, _ = m.Update(keyMsg("h"))
 	m = model.(Model)
-	if m.activePane != panePreview {
-		t.Errorf("after 'h': activePane = %d, want %d", m.activePane, panePreview)
-	}
-
-	model, _ = m.Update(keyMsg("h"))
-	m = model.(Model)
 	if m.activePane != paneList {
-		t.Errorf("after 2nd 'h': activePane = %d, want %d", m.activePane, paneList)
+		t.Errorf("after 'h': activePane = %d, want %d", m.activePane, paneList)
 	}
 
 	// Left at leftmost does nothing
 	model, _ = m.Update(keyMsg("h"))
 	m = model.(Model)
 	if m.activePane != paneList {
-		t.Errorf("after 3rd 'h': activePane = %d, should stay at %d", m.activePane, paneList)
+		t.Errorf("after 2nd 'h': activePane = %d, should stay at %d", m.activePane, paneList)
 	}
 }
 
@@ -218,27 +198,6 @@ func TestModeTransition_Search(t *testing.T) {
 	m = model.(Model)
 	if m.mode != modeSearch {
 		t.Errorf("after '/': mode = %d, want %d (modeSearch)", m.mode, modeSearch)
-	}
-
-	// Escape returns to normal
-	model, _ = m.Update(specialKeyMsg(tea.KeyEscape))
-	m = model.(Model)
-	if m.mode != modeNormal {
-		t.Errorf("after Esc: mode = %d, want %d (modeNormal)", m.mode, modeNormal)
-	}
-}
-
-func TestModeTransition_Chat(t *testing.T) {
-	m := newTestModelWithNotes(t)
-
-	// Enter chat mode
-	model, _ := m.Update(keyMsg("c"))
-	m = model.(Model)
-	if m.mode != modeChat {
-		t.Errorf("after 'c': mode = %d, want %d (modeChat)", m.mode, modeChat)
-	}
-	if m.activePane != paneChat {
-		t.Errorf("after 'c': activePane = %d, want %d (paneChat)", m.activePane, paneChat)
 	}
 
 	// Escape returns to normal
@@ -379,45 +338,6 @@ func TestSyncCompleteMsg_EmptyResult(t *testing.T) {
 	}
 	if m.previewContent != "" {
 		t.Error("previewContent should be empty when no notes")
-	}
-}
-
-func TestAiResponseMsg(t *testing.T) {
-	m := newTestModelWithNotes(t)
-	m.aiPending = 1
-
-	model, _ := m.Update(aiResponseMsg{response: "AI says hello"})
-	m = model.(Model)
-
-	if m.aiPending != 0 {
-		t.Errorf("aiPending = %d, want 0", m.aiPending)
-	}
-	if len(m.chatHistory) != 1 {
-		t.Fatalf("chatHistory len = %d, want 1", len(m.chatHistory))
-	}
-	if m.chatHistory[0].role != "assistant" {
-		t.Errorf("role = %q, want 'assistant'", m.chatHistory[0].role)
-	}
-	if m.chatHistory[0].content != "AI says hello" {
-		t.Errorf("content = %q, want 'AI says hello'", m.chatHistory[0].content)
-	}
-}
-
-func TestAiResponseMsg_Error(t *testing.T) {
-	m := newTestModelWithNotes(t)
-	m.aiPending = 1
-
-	model, _ := m.Update(aiResponseMsg{err: fmt.Errorf("AI error")})
-	m = model.(Model)
-
-	if m.aiPending != 0 {
-		t.Errorf("aiPending = %d, want 0", m.aiPending)
-	}
-	if len(m.chatHistory) != 1 {
-		t.Fatalf("chatHistory len = %d, want 1", len(m.chatHistory))
-	}
-	if m.chatHistory[0].role != "assistant" {
-		t.Errorf("role = %q, want 'assistant'", m.chatHistory[0].role)
 	}
 }
 
@@ -743,19 +663,18 @@ func TestLayoutWidths(t *testing.T) {
 
 	listW := m.listWidth()
 	previewW := m.previewWidth()
-	chatW := m.chatWidth()
 
-	if listW+previewW+chatW != m.width {
-		t.Errorf("pane widths sum to %d, want %d", listW+previewW+chatW, m.width)
+	if listW+previewW != m.width {
+		t.Errorf("pane widths sum to %d, want %d", listW+previewW, m.width)
 	}
 
 	// List should be ~22%
 	if listW != 22 {
 		t.Errorf("listWidth = %d, expected ~22", listW)
 	}
-	// Preview should be ~46%
-	if previewW != 46 {
-		t.Errorf("previewWidth = %d, expected ~46", previewW)
+	// Preview should take the rest
+	if previewW != m.width-listW {
+		t.Errorf("previewWidth = %d, expected %d", previewW, m.width-listW)
 	}
 }
 
@@ -824,25 +743,6 @@ func TestClearStatusAfter(t *testing.T) {
 }
 
 // --- Chat Viewport Tests ---
-
-func TestUpdateChatViewport(t *testing.T) {
-	m := newTestModelWithNotes(t)
-
-	m.chatHistory = []chatMessage{
-		{role: "user", content: "Hello"},
-		{role: "assistant", content: "Hi there"},
-	}
-	m.updateChatViewport()
-
-	// Should not panic and viewport should have content set
-}
-
-func TestUpdateChatViewport_WithPending(t *testing.T) {
-	m := newTestModelWithNotes(t)
-	m.aiPending = 1
-	m.updateChatViewport()
-	// Should not panic - should show "Thinking..."
-}
 
 // --- SetWatcher Tests ---
 
@@ -1040,84 +940,6 @@ func TestNewNoteMode_KeysNotInterpretedAsCommands(t *testing.T) {
 	}
 }
 
-// --- Generate Mode Tests ---
-
-func TestGenerateMode_Enter(t *testing.T) {
-	m := newTestModelWithNotes(t)
-
-	model, _ := m.Update(keyMsg("g"))
-	m = model.(Model)
-
-	if m.mode != modeGenerate {
-		t.Errorf("after 'g': mode = %d, want %d (modeGenerate)", m.mode, modeGenerate)
-	}
-}
-
-func TestGenerateMode_EscapeCancels(t *testing.T) {
-	m := newTestModelWithNotes(t)
-
-	model, _ := m.Update(keyMsg("g"))
-	m = model.(Model)
-
-	model, _ = m.Update(specialKeyMsg(tea.KeyEscape))
-	m = model.(Model)
-
-	if m.mode != modeNormal {
-		t.Errorf("after Esc: mode = %d, want %d (modeNormal)", m.mode, modeNormal)
-	}
-}
-
-func TestGenerateMode_EmptyPromptDoesNothing(t *testing.T) {
-	m := newTestModelWithNotes(t)
-
-	model, _ := m.Update(keyMsg("g"))
-	m = model.(Model)
-
-	// Submit empty prompt
-	model, _ = m.Update(specialKeyMsg(tea.KeyEnter))
-	m = model.(Model)
-
-	if m.mode != modeNormal {
-		t.Errorf("mode = %d, want %d (modeNormal)", m.mode, modeNormal)
-	}
-	if m.aiPending != 0 {
-		t.Errorf("aiPending = %d, want 0 (empty prompt should not generate)", m.aiPending)
-	}
-}
-
-func TestGenerateCompleteMsg_Success(t *testing.T) {
-	m := newTestModelWithNotes(t)
-	m.aiPending = 1
-
-	model, _ := m.Update(generateCompleteMsg{path: "/notes/generated.md"})
-	m = model.(Model)
-
-	if m.aiPending != 0 {
-		t.Errorf("aiPending = %d, want 0", m.aiPending)
-	}
-	if m.statusMsg == "" {
-		t.Error("statusMsg should contain generated path")
-	}
-	if !m.syncing {
-		t.Error("should trigger re-sync after generation")
-	}
-}
-
-func TestGenerateCompleteMsg_Error(t *testing.T) {
-	m := newTestModelWithNotes(t)
-	m.aiPending = 1
-
-	model, _ := m.Update(generateCompleteMsg{err: fmt.Errorf("AI unavailable")})
-	m = model.(Model)
-
-	if m.aiPending != 0 {
-		t.Errorf("aiPending = %d, want 0", m.aiPending)
-	}
-	if m.statusMsg == "" {
-		t.Error("statusMsg should contain error")
-	}
-}
-
 // --- Tag Filter Mode Tests ---
 
 func TestTagFilterMode_Enter(t *testing.T) {
@@ -1223,104 +1045,6 @@ func TestSortCycling_ResetsCursor(t *testing.T) {
 	}
 }
 
-// --- Responsive Pane Layout Tests ---
-
-func TestResponsiveLayout_NarrowHidesChat(t *testing.T) {
-	m := newTestModel(t)
-
-	// Simulate narrow terminal
-	model, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 40})
-	m = model.(Model)
-
-	if m.chatVisible {
-		t.Error("chatVisible should be false on narrow terminal (< 100)")
-	}
-	if m.chatWidth() != 0 {
-		t.Errorf("chatWidth() = %d, want 0 when chat hidden", m.chatWidth())
-	}
-}
-
-func TestResponsiveLayout_WideShowsChat(t *testing.T) {
-	m := newTestModel(t)
-
-	model, _ := m.Update(tea.WindowSizeMsg{Width: 150, Height: 40})
-	m = model.(Model)
-
-	if !m.chatVisible {
-		t.Error("chatVisible should be true on wide terminal (>= 100)")
-	}
-	if m.chatWidth() == 0 {
-		t.Error("chatWidth() should be > 0 when chat visible")
-	}
-}
-
-func TestResponsiveLayout_ChatKeyShowsHiddenChat(t *testing.T) {
-	m := newTestModelWithNotes(t)
-
-	// Simulate narrow terminal
-	model, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 40})
-	m = model.(Model)
-
-	if m.chatVisible {
-		t.Fatal("chat should be hidden initially on narrow terminal")
-	}
-
-	// Press 'c' to show chat
-	model, _ = m.Update(keyMsg("c"))
-	m = model.(Model)
-
-	if !m.chatVisible {
-		t.Error("chatVisible should be true after pressing 'c'")
-	}
-	if m.mode != modeChat {
-		t.Errorf("mode = %d, want %d (modeChat)", m.mode, modeChat)
-	}
-}
-
-func TestResponsiveLayout_TabSkipsHiddenChat(t *testing.T) {
-	m := newTestModelWithNotes(t)
-
-	// Simulate narrow terminal
-	model, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 40})
-	m = model.(Model)
-
-	// Tab from list should go to preview
-	model, _ = m.Update(keyMsg("tab"))
-	m = model.(Model)
-	if m.activePane != panePreview {
-		t.Errorf("after tab: activePane = %d, want %d (panePreview)", m.activePane, panePreview)
-	}
-
-	// Tab from preview should wrap to list (skipping hidden chat)
-	model, _ = m.Update(keyMsg("tab"))
-	m = model.(Model)
-	if m.activePane != paneList {
-		t.Errorf("after 2nd tab: activePane = %d, want %d (paneList, wraps around)", m.activePane, paneList)
-	}
-}
-
-func TestResponsiveLayout_RightKeyStopsAtPreview(t *testing.T) {
-	m := newTestModelWithNotes(t)
-
-	// Simulate narrow terminal
-	model, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 40})
-	m = model.(Model)
-
-	// Move right to preview
-	model, _ = m.Update(keyMsg("l"))
-	m = model.(Model)
-	if m.activePane != panePreview {
-		t.Errorf("after 'l': activePane = %d, want %d", m.activePane, panePreview)
-	}
-
-	// Another right should stay at preview (chat is hidden)
-	model, _ = m.Update(keyMsg("l"))
-	m = model.(Model)
-	if m.activePane != panePreview {
-		t.Errorf("after 2nd 'l': activePane = %d, should stay at %d (chat hidden)", m.activePane, panePreview)
-	}
-}
-
 // --- View Rendering Tests for New Features ---
 
 func TestView_ConfirmDialog(t *testing.T) {
@@ -1355,7 +1079,7 @@ func TestView_HelpOverlayShowsNewKeys(t *testing.T) {
 
 	view := m.View().Content
 	// Verify new keybindings are in help
-	for _, expected := range []string{"Delete note", "Generate AI note", "Filter by tag", "Cycle sort"} {
+	for _, expected := range []string{"Delete note", "Filter by tag", "Cycle sort"} {
 		if !strings.Contains(view, expected) {
 			t.Errorf("help view should contain %q", expected)
 		}
@@ -1415,28 +1139,6 @@ func TestNormalKeysIgnoredInSearchMode(t *testing.T) {
 		msg := cmd()
 		if _, ok := msg.(tea.QuitMsg); ok {
 			t.Error("'q' in search mode should not issue quit")
-		}
-	}
-}
-
-func TestNormalKeysIgnoredInChatMode(t *testing.T) {
-	m := newTestModelWithNotes(t)
-
-	// Enter chat mode
-	model, _ := m.Update(keyMsg("c"))
-	m = model.(Model)
-
-	// 'q' in chat mode should be typed, not quit
-	model, cmd := m.Update(keyMsg("q"))
-	m = model.(Model)
-
-	if m.mode != modeChat {
-		t.Errorf("mode = %d, want %d (modeChat)", m.mode, modeChat)
-	}
-	if cmd != nil {
-		msg := cmd()
-		if _, ok := msg.(tea.QuitMsg); ok {
-			t.Error("'q' in chat mode should not issue quit")
 		}
 	}
 }
@@ -2172,10 +1874,9 @@ func TestInputSuppression_NewModelHasSuppression(t *testing.T) {
 		NotesDir: t.TempDir(),
 		DBPath:   dbPath,
 	}
-	worker := ai.NewWorker(10)
 
 	// New() should set startup suppression
-	m := New(cfg, database, worker)
+	m := New(cfg, database)
 	if m.suppressInputUntil.IsZero() {
 		t.Error("New() should set suppressInputUntil for startup protection")
 	}
@@ -2193,128 +1894,10 @@ func TestInputSuppression_ZeroTimeDisablesSuppression(t *testing.T) {
 	}
 
 	// Keys should work normally when suppression is zero
-	model, _ := m.Update(keyMsg("g"))
+	model, _ := m.Update(keyMsg("n"))
 	m = model.(Model)
 
-	if m.mode != modeGenerate {
-		t.Errorf("mode = %d, want %d; zero suppression should not block keys", m.mode, modeGenerate)
-	}
-}
-
-// --- AI Enhancement Tests ---
-
-func newTestModelInEditMode(t *testing.T) Model {
-	t.Helper()
-	m := newTestModel(t)
-
-	// Create a real note file for the editor
-	content := "---\ntitle: Test\ndate: 2024-01-01\n---\n\nThis is a test note with enough words to pass the threshold."
-	path := filepath.Join(m.cfg.NotesDir, "2024-01-01-test.md")
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	n, err := note.ParseFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	m.editor = NewEditor(n, m.database, 76, 36, nil)
-	m.editingPath = path
-	m.mode = modeEdit
-	m.activePane = panePreview
-	return m
-}
-
-func TestMaybeEnhance_TriggersWhenBodyChanged(t *testing.T) {
-	m := newTestModelInEditMode(t)
-	m.editor.lastReviewedBody = "old body"
-
-	cmd := m.maybeEnhance()
-	if cmd == nil {
-		t.Error("maybeEnhance should return a command when body has changed")
-	}
-	if !m.editor.EnhancePending() {
-		t.Error("editor should be marked as enhance pending")
-	}
-}
-
-func TestMaybeEnhance_SkipsWhenNoChange(t *testing.T) {
-	m := newTestModelInEditMode(t)
-	currentBody := m.editor.BodyValue()
-	m.editor.lastReviewedBody = currentBody
-
-	cmd := m.maybeEnhance()
-	if cmd != nil {
-		t.Error("maybeEnhance should return nil when body hasn't changed")
-	}
-}
-
-func TestMaybeEnhance_SkipsWhenPending(t *testing.T) {
-	m := newTestModelInEditMode(t)
-	m.editor.lastReviewedBody = "old body"
-	m.editor.SetEnhancePending(true)
-
-	cmd := m.maybeEnhance()
-	if cmd != nil {
-		t.Error("maybeEnhance should return nil when enhance is already pending")
-	}
-}
-
-func TestMaybeEnhance_SkipsShortNotes(t *testing.T) {
-	m := newTestModelInEditMode(t)
-	m.editor.body.SetValue("hi") // too short
-	m.editor.lastReviewedBody = ""
-
-	cmd := m.maybeEnhance()
-	if cmd != nil {
-		t.Error("maybeEnhance should return nil for very short notes")
-	}
-}
-
-func TestMaybeEnhance_SkipsNilWorker(t *testing.T) {
-	m := newTestModelInEditMode(t)
-	m.worker = nil
-
-	cmd := m.maybeEnhance()
-	if cmd != nil {
-		t.Error("maybeEnhance should return nil with nil worker")
-	}
-}
-
-func TestModel_EditorEnhanceComplete_RoutedToEditor(t *testing.T) {
-	m := newTestModelInEditMode(t)
-	m.editor.enhancePending = true
-	m.editor.bodyAtRequest = m.editor.BodyValue()
-
-	model, _ := m.Update(editorEnhanceCompleteMsg{
-		correctedBody: "corrected content here",
-	})
-	m = model.(Model)
-
-	if m.editor.enhancePending {
-		t.Error("enhancePending should be false after handling enhance complete msg")
-	}
-}
-
-func TestModel_EditorEnhanceComplete_IgnoredOutsideEditMode(t *testing.T) {
-	m := newTestModel(t)
-	m.mode = modeNormal
-
-	// Should not panic
-	model, _ := m.Update(editorEnhanceCompleteMsg{
-		correctedBody: "some body",
-	})
-	_ = model.(Model)
-}
-
-func TestModel_HelpView_ContainsCtrlZ(t *testing.T) {
-	m := newTestModel(t)
-	help := m.helpView()
-	if !strings.Contains(help, "Ctrl+Z") {
-		t.Error("help view should contain Ctrl+Z keybinding")
-	}
-	if !strings.Contains(help, "Undo AI fixes") {
-		t.Error("help view should describe Ctrl+Z as 'Undo AI fixes'")
+	if m.mode != modeNewNote {
+		t.Errorf("mode = %d, want %d; zero suppression should not block keys", m.mode, modeNewNote)
 	}
 }

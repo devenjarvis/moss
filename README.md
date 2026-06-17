@@ -5,9 +5,9 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/devenjarvis/moss)](https://goreportcard.com/report/github.com/devenjarvis/moss)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-AI-powered note-taking TUI built with Go and [Bubble Tea](https://github.com/charmbracelet/bubbletea).
+A fast, friendly note-taking TUI built with Go and [Bubble Tea](https://github.com/charmbracelet/bubbletea). No LLM required.
 
-Notes are plain markdown files with YAML frontmatter, stored in `~/moss/notes/`. A SQLite database indexes all notes for fast full-text search. AI features (summarization, tagging, Q&A, note generation) are powered by the Claude CLI.
+Notes are plain markdown files with YAML frontmatter, stored in `~/moss/notes/`. A SQLite database indexes all notes for instant full-text search. Everything runs locally — your notes never leave your machine.
 
 ## Install
 
@@ -51,10 +51,8 @@ go build -o moss ./cmd/moss/
 
 ```
 moss                    Launch the TUI
-moss new [title]        Create a new note and open in $EDITOR
-moss ask "question"     Query across your notes using AI
+moss new [title]        Create a new note
 moss sync               Scan for new/changed files and rebuild index
-moss generate "prompt"  Generate a new note from a prompt
 moss version            Show version information
 moss uninstall [--all]  Remove moss (preserves notes by default)
 moss help               Show usage information
@@ -69,10 +67,8 @@ moss help               Show usage information
 | `Tab` / `Shift+Tab` | Next/previous pane |
 | `Enter` | Open note in editor |
 | `/` | Search notes |
-| `c` | Chat with AI |
 | `n` | New note |
 | `d` | Delete note |
-| `g` | Generate note from AI prompt |
 | `t` | Filter by tag |
 | `T` | View TODOs |
 | `o` | Cycle sort order (date/title/modified/words) |
@@ -107,10 +103,11 @@ Press `T` to open the TODO view, which collects all `- [ ]` and `- [x]` items fr
 
 ## Layout
 
-Three-pane TUI:
-- **Left** — Note list (filterable via `/` search). AI-generated notes are marked with `*`, notes with TODOs with `+`.
-- **Center** — Markdown preview (rendered with [Glamour](https://github.com/charmbracelet/glamour))
-- **Right** — AI chat pane
+Two-pane TUI:
+- **Left** — Note list (filterable via `/` search). Notes with TODOs are marked with `+`.
+- **Right** — Markdown preview (rendered with [Glamour](https://github.com/charmbracelet/glamour))
+
+Press `Enter` to open the built-in editor, which has live markdown rendering, smart list continuation, lightweight autocorrect, and inline formatting shortcuts.
 
 ## Note Format
 
@@ -129,16 +126,15 @@ summary: A short summary of the note contents.
 ---
 ```
 
-Generated notes also include `generated_from` (source note paths) and `generated_prompt` fields for provenance tracking.
+## Editing
 
-## AI Integration
+The built-in editor (open a note with `Enter`) supports:
 
-Moss calls the `claude` CLI as a subprocess — it does not call the Anthropic API directly. Two tiers:
-
-- **Haiku** (`claude-haiku-4-5-20251001`) — Background tasks: frontmatter generation, summarization, tag suggestion. Runs automatically on notes with missing fields.
-- **Sonnet** (default) — User-facing tasks: queries, cross-note questions, note generation.
-
-Requires the [Claude CLI](https://docs.anthropic.com/en/docs/claude-code) to be installed and authenticated.
+- Live markdown rendering as you type
+- Smart list continuation (bullets, numbered lists, checkboxes)
+- Lightweight, fully local autocorrect (over-capitalization and common typos), undoable with backspace
+- Inline formatting: `⌘B`/`⌘I` for bold/italic, `⌘1`–`⌘3` for headings
+- Auto-save and automatic rename when the title changes
 
 ## Configuration
 
@@ -147,22 +143,22 @@ Optional config file at `~/moss/config.yaml`:
 ```yaml
 notes_dir: ~/moss/notes
 db_path: ~/moss/moss.db
-editor: vim
+autocorrect: true
 ```
 
-All fields are optional and fall back to defaults.
+All fields are optional and fall back to defaults (`autocorrect` defaults to `true`).
 
 ## Architecture
 
 ```
 cmd/moss/           CLI entry point and subcommands
 internal/
-  ai/               Claude CLI subprocess integration, background worker
+  autocorrect/      Local, lightweight autocorrect
   config/           YAML config loading
   db/               SQLite + FTS5 indexing
   note/             Note model, frontmatter parsing, file operations
   sync/             File scanning and fsnotify watcher
-  tui/              Bubble Tea TUI (model, styles, keybindings)
+  tui/              Bubble Tea TUI (model, editor, styles, keybindings)
 ```
 
 ## Uninstall

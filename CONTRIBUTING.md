@@ -25,10 +25,6 @@ go install github.com/magefile/mage@latest
 mage build
 ```
 
-### AI Features
-
-AI features require the [Claude CLI](https://docs.anthropic.com/en/docs/claude-code) to be installed and authenticated. Without it the app still works — AI-powered features (chat, generation, auto-tagging) will simply be unavailable.
-
 ## Running Tests
 
 ```bash
@@ -55,12 +51,12 @@ mage test
 ```
 cmd/moss/           CLI entry point and subcommands
 internal/
-  ai/               Claude CLI subprocess integration
+  autocorrect/      Local, lightweight autocorrect
   config/           YAML config loading
   db/               SQLite + FTS5 indexing
   note/             Note model, frontmatter parsing, file I/O
   sync/             File scanning and fsnotify watcher
-  tui/              Bubble Tea TUI (model, styles, keybindings)
+  tui/              Bubble Tea TUI (model, editor, styles, keybindings)
 ```
 
 ## Reporting Issues
