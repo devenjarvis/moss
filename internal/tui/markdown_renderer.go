@@ -82,7 +82,7 @@ func renderMarkdownBody(rawText string, cursorLine, cursorCol int, focused bool,
 
 		// Replace HRule text with full-width rule now that we have width
 		if len(spans) == 1 && spans[0].kind == spanHRule {
-			spans[0].text = strings.Repeat("─", width)
+			spans[0].text = strings.Repeat(glyphRule, width)
 		}
 
 		if focused && lineIdx == cursorLine {
@@ -452,7 +452,7 @@ func renderSpan(span textSpan) string {
 	case spanBlockquoteMarker:
 		return mdBlockquoteStyle.Render(span.text)
 	case spanBlockquoteContent:
-		return lipgloss.NewStyle().Foreground(colorMuted).Render(span.text)
+		return mdBlockquoteTextStyle.Render(span.text)
 	case spanHRule:
 		return mdHRuleStyle.Render(span.text)
 	case spanCursor, spanCursorEOL:
@@ -474,7 +474,7 @@ func renderLine(spans []textSpan, width int) string {
 	if visWidth < width {
 		assembled += strings.Repeat(" ", width-visWidth)
 	} else if visWidth > width {
-		assembled = lipgloss.NewStyle().MaxWidth(width).Render(assembled)
+		assembled = clampWidth(assembled, width)
 	}
 	return assembled
 }
@@ -519,7 +519,7 @@ func renderMarkdownPreview(rawText string, width int) string {
 			}
 
 			if len(spans) == 1 && spans[0].kind == spanHRule {
-				spans[0].text = strings.Repeat("─", width)
+				spans[0].text = strings.Repeat(glyphRule, width)
 			}
 
 			rendered = append(rendered, renderLine(spans, width))
